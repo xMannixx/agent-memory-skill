@@ -1,0 +1,5 @@
+name: agent-memory-plugin
+version: 1.0.0
+description: "Injects AgentMemory facts (identity + recent evidence) into every turn via pre_llm_call hook."
+author: Hermes Agent
+kind: general
