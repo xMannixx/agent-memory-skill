@@ -18,6 +18,12 @@ def mem(tmp_path):
     return AgentMemory(db_path=":memory:")
 
 
+@pytest.fixture
+def file_mem(tmp_path):
+    """File-backed DB Fixture fuer Tests, die echtes Disk-Verhalten brauchen."""
+    return AgentMemory(db_path=str(tmp_path / "memory.db"))
+
+
 # ==================== TEST 1: Basis remember/recall ====================
 
 def test_remember_and_recall(mem):
@@ -269,6 +275,49 @@ def test_lessons_and_entities(mem):
     entity = mem.get_entity("Perry", "person")
     assert entity is not None
     assert entity.attributes["username"] == "xPerryx"
+
+
+# ==================== TEST 7: Schema-Indexe und WAL ====================
+
+EXPECTED_INDEXES = {
+    "idx_facts_class_super",
+    "idx_facts_expires",
+    "idx_facts_last_accessed",
+    "idx_lessons_outcome_time",
+    "idx_entities_type_name",
+}
+
+
+def test_required_indexes_exist(mem):
+    """Alle Performance-Indexe werden bei Init angelegt."""
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'"
+    )
+    found = {row[0] for row in cursor.fetchall()}
+    missing = EXPECTED_INDEXES - found
+    assert missing == set(), f"Fehlende Indexe: {missing}"
+
+
+def test_wal_mode_on_file_db(file_mem):
+    """File-backed DB laeuft im WAL-Modus fuer concurrent reader/writer."""
+    conn = sqlite3.connect(file_mem.db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode")
+        mode = cursor.fetchone()[0]
+    finally:
+        conn.close()
+    assert mode.lower() == "wal"
+
+
+def test_memory_db_does_not_use_wal(mem):
+    """:memory: DB bleibt im Default-Journalmode, WAL wird uebersprungen."""
+    cursor = mem._shared_conn.cursor()
+    cursor.execute("PRAGMA journal_mode")
+    mode = cursor.fetchone()[0].lower()
+    assert mode != "wal"
 
 
 if __name__ == "__main__":

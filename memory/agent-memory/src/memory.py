@@ -197,10 +197,31 @@ class AgentMemory:
         self._migrate_session_log(cursor)
         self._cleanup_fts_orphans(cursor)
         self._create_fts_triggers(cursor)
+        self._create_indexes(cursor)
+        self._enable_wal_if_file_db(cursor)
 
         conn.commit()
         if should_close:
             conn.close()
+
+    def _create_indexes(self, cursor):
+        cursor.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_facts_class_super
+                ON facts(authority_class, superseded_by);
+            CREATE INDEX IF NOT EXISTS idx_facts_expires
+                ON facts(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_facts_last_accessed
+                ON facts(last_accessed);
+            CREATE INDEX IF NOT EXISTS idx_lessons_outcome_time
+                ON lessons(outcome, created_at);
+            CREATE INDEX IF NOT EXISTS idx_entities_type_name
+                ON entities(entity_type, name);
+        """)
+
+    def _enable_wal_if_file_db(self, cursor):
+        if self.db_path == ":memory:":
+            return
+        cursor.execute("PRAGMA journal_mode=WAL")
 
     def _migrate_session_log(self, cursor):
         cursor.execute("""
