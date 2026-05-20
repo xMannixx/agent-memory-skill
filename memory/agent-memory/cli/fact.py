@@ -68,6 +68,26 @@ def main():
                            choices=["positive", "negative", "neutral"])
     lessons_p.add_argument("--limit", "-n", type=int, default=10)
 
+    # audit
+    audit_p = subparsers.add_parser("audit", help="Audit-Log anzeigen")
+    audit_p.add_argument("--limit", "-n", type=int, default=20)
+    audit_p.add_argument("--op", help="Auf einen Op-Typ filtern")
+
+    # snapshot
+    snap_p = subparsers.add_parser("snapshot", help="Snapshot der DB anlegen")
+    snap_p.add_argument("--label", help="Optionales Label")
+
+    # snapshots
+    subparsers.add_parser("snapshots", help="Vorhandene Snapshots auflisten")
+
+    # restore
+    restore_p = subparsers.add_parser("restore", help="DB aus Snapshot wiederherstellen")
+    restore_p.add_argument("path", help="Pfad zum Snapshot")
+
+    # anomalies
+    anom_p = subparsers.add_parser("anomalies", help="Anomalie-Eintraege anzeigen")
+    anom_p.add_argument("--limit", "-n", type=int, default=10)
+
     args = parser.parse_args()
     mem = AgentMemory(db_path=args.db)
 
@@ -140,6 +160,41 @@ def main():
             print("Keine Lektionen gefunden.")
         for l in lessons:
             print(f"[{l.id}] [{l.outcome}] {l.action} → {l.insight}")
+
+    elif args.command == "audit":
+        entries = mem.get_audit(limit=args.limit, op=args.op)
+        if not entries:
+            print("Keine Audit-Eintraege.")
+        for e in entries:
+            flag = "OK " if e["accepted"] else "REJ"
+            reason = f" reason={e['reason']}" if e["reason"] else ""
+            fid = f" fact={e['fact_id']}" if e["fact_id"] else ""
+            cls = f" {e['authority_class']}" if e["authority_class"] else ""
+            print(f"[{e['ts']}] {flag} {e['op']}{cls}{fid}{reason}")
+
+    elif args.command == "snapshot":
+        path = mem.snapshot(label=args.label)
+        print(f"OK Snapshot: {path}")
+
+    elif args.command == "snapshots":
+        snaps = mem.list_snapshots()
+        if not snaps:
+            print("Keine Snapshots vorhanden.")
+        for s in snaps:
+            kb = s["size_bytes"] / 1024
+            print(f"[{s['created_at']}] {s['path']} ({kb:.1f} KB)")
+
+    elif args.command == "restore":
+        mem.restore(args.path)
+        print(f"OK Wiederhergestellt aus: {args.path}")
+
+    elif args.command == "anomalies":
+        anomalies = mem.anomalies(limit=args.limit)
+        if not anomalies:
+            print("Keine Anomalien.")
+        for a in anomalies:
+            meta = a.get("metadata") or {}
+            print(f"[{a['ts']}] {a['reason']} count={meta.get('count')}")
 
 
 if __name__ == "__main__":

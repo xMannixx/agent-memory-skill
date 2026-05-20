@@ -11,6 +11,8 @@ MIT License
 import sqlite3
 import json
 import hashlib
+import tempfile
+import shutil
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -44,6 +46,9 @@ AUTHORITY_POLICY = {
 
 REBOUND_IDLE_THRESHOLD_HOURS = 6
 REBOUND_MAX_FACTS_AFTER_IDLE = 3
+
+ANOMALY_WRITES_PER_MINUTE = 20
+ANOMALY_WINDOW_SECONDS = 60
 
 
 @dataclass
@@ -114,12 +119,17 @@ class AgentMemory:
         self._rebound_write_count = 0
         self._session_start = self._utc_now()
         self._rebound_active = False
+        self._write_timestamps: List[datetime] = []
 
         # Shared connection für :memory: (Tests) — SQLite in-memory
         # verliert Daten wenn Connection geschlossen wird
         self._shared_conn = None
         if db_path == ":memory:":
             self._shared_conn = sqlite3.connect(":memory:")
+            self._snapshot_dir = Path(tempfile.mkdtemp(prefix="agent-memory-snap-"))
+        else:
+            self._snapshot_dir = Path(db_path).parent / "snapshots"
+            self._snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self._init_db()
         self._check_rebound()
@@ -194,6 +204,21 @@ class AgentMemory:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                op TEXT NOT NULL,
+                fact_id TEXT,
+                content_hash TEXT,
+                authority_class TEXT,
+                source TEXT,
+                accepted INTEGER NOT NULL DEFAULT 1,
+                reason TEXT,
+                metadata TEXT
+            )
+        """)
+
         self._migrate_session_log(cursor)
         self._cleanup_fts_orphans(cursor)
         self._create_fts_triggers(cursor)
@@ -216,6 +241,10 @@ class AgentMemory:
                 ON lessons(outcome, created_at);
             CREATE INDEX IF NOT EXISTS idx_entities_type_name
                 ON entities(entity_type, name);
+            CREATE INDEX IF NOT EXISTS idx_audit_ts
+                ON memory_audit(ts);
+            CREATE INDEX IF NOT EXISTS idx_audit_op
+                ON memory_audit(op);
         """)
 
     def _enable_wal_if_file_db(self, cursor):
@@ -299,6 +328,67 @@ class AgentMemory:
         if should_close:
             conn.close()
 
+    def _content_hash(self, content: str) -> str:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    def _audit(self, op: str, *, fact_id: Optional[str] = None,
+               content: Optional[str] = None,
+               authority_class: Optional[str] = None,
+               source: Optional[str] = None,
+               accepted: bool = True,
+               reason: Optional[str] = None,
+               metadata: Optional[Dict[str, Any]] = None,
+               conn: Optional[sqlite3.Connection] = None):
+        """Schreibt eine Zeile in memory_audit. Append-only by convention."""
+        own_conn = conn is None
+        if own_conn:
+            conn, should_close = self._connect()
+        else:
+            should_close = False
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO memory_audit
+                (ts, op, fact_id, content_hash, authority_class,
+                 source, accepted, reason, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            self._now(),
+            op,
+            fact_id,
+            self._content_hash(content) if content is not None else None,
+            authority_class,
+            source,
+            1 if accepted else 0,
+            reason,
+            json.dumps(metadata) if metadata else None,
+        ))
+
+        if own_conn:
+            conn.commit()
+            if should_close:
+                conn.close()
+
+    def _record_write_and_check_anomaly(self):
+        """Rolling 60s Write-Counter; loggt Anomalie wenn Schwelle ueberschritten."""
+        now = self._utc_now()
+        cutoff = now - timedelta(seconds=ANOMALY_WINDOW_SECONDS)
+        self._write_timestamps = [
+            ts for ts in self._write_timestamps if ts >= cutoff
+        ]
+        self._write_timestamps.append(now)
+        count = len(self._write_timestamps)
+        if count > ANOMALY_WRITES_PER_MINUTE:
+            self._audit(
+                "anomaly_detected",
+                reason="writes_per_minute_exceeded",
+                metadata={
+                    "count": count,
+                    "window_seconds": ANOMALY_WINDOW_SECONDS,
+                    "threshold": ANOMALY_WRITES_PER_MINUTE,
+                },
+            )
+
     def _generate_id(self, content: str, authority_class: str = "evidence") -> str:
         """Deterministische Content-Hash-ID. Gleicher Text in gleicher Lane = gleicher Fakt."""
         normalized = content.strip()
@@ -376,10 +466,28 @@ class AgentMemory:
 
         # Source-Validierung
         if source not in policy["allowed_sources"]:
+            self._audit(
+                "policy_reject",
+                content=content,
+                authority_class=authority_class,
+                source=source,
+                accepted=False,
+                reason="source_not_allowed",
+            )
             return None
 
         # Confidence-Filter
         if confidence < policy["min_confidence"]:
+            self._audit(
+                "policy_reject",
+                content=content,
+                authority_class=authority_class,
+                source=source,
+                accepted=False,
+                reason="low_confidence",
+                metadata={"confidence": confidence,
+                          "min_confidence": policy["min_confidence"]},
+            )
             return None
 
         fact_id = self._generate_id(content, authority_class)
@@ -391,6 +499,14 @@ class AgentMemory:
 
         if exists:
             self._touch(conn, [fact_id])
+            self._audit(
+                "update",
+                fact_id=fact_id,
+                content=content,
+                authority_class=authority_class,
+                source=source,
+                conn=conn,
+            )
             conn.commit()
             if should_close:
                 conn.close()
@@ -401,6 +517,16 @@ class AgentMemory:
         # Rebound-Protection nur bei echten neuen Facts (identity = Floor, immer erlaubt)
         if self._rebound_active and authority_class != "identity":
             if self._rebound_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
+                self._audit(
+                    "rebound_reject",
+                    content=content,
+                    authority_class=authority_class,
+                    source=source,
+                    accepted=False,
+                    reason="rebound_cap_exceeded",
+                    conn=conn,
+                )
+                conn.commit()
                 if should_close:
                     conn.close()
                 return None
@@ -424,12 +550,22 @@ class AgentMemory:
         """, (fact_id, content, json.dumps(tags), source, confidence,
               authority_class, now, now, expires_at))
 
+        self._audit(
+            "write",
+            fact_id=fact_id,
+            content=content,
+            authority_class=authority_class,
+            source=source,
+            conn=conn,
+        )
+
         conn.commit()
         if should_close:
             conn.close()
 
         self._session_write_count += 1
         self._log_write()
+        self._record_write_and_check_anomaly()
         return fact_id
 
     def recall(self, query: str, limit: int = 10,
@@ -545,6 +681,12 @@ class AgentMemory:
             "UPDATE facts SET superseded_by = ? WHERE id = ?",
             (new_id, old_fact_id)
         )
+        self._audit(
+            "supersede",
+            fact_id=new_id,
+            metadata={"old_id": old_fact_id, "new_id": new_id},
+            conn=conn,
+        )
         conn.commit()
         if should_close:
             conn.close()
@@ -554,6 +696,7 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+        self._audit("forget", fact_id=fact_id, conn=conn)
         conn.commit()
         if should_close:
             conn.close()
@@ -579,7 +722,15 @@ class AgentMemory:
                 AND expires_at < ?
                 AND superseded_by IS NULL
             """, (cls, self._now()))
-            deleted[cls] = cursor.rowcount
+            removed = cursor.rowcount
+            deleted[cls] = removed
+            if removed:
+                self._audit(
+                    "forget_stale",
+                    authority_class=cls,
+                    metadata={"removed": removed},
+                    conn=conn,
+                )
 
         conn.commit()
         if should_close:
@@ -810,6 +961,134 @@ class AgentMemory:
                 REBOUND_MAX_FACTS_AFTER_IDLE - self._rebound_write_count
             ) if self._rebound_active else None,
         }
+
+    # ==================== AUDIT / ANOMALY ====================
+
+    def get_audit(self, limit: int = 100, since: Optional[str] = None,
+                  op: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Liefert Audit-Eintraege, neueste zuerst. since: ISO-Timestamp."""
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+
+        sql = "SELECT id, ts, op, fact_id, content_hash, authority_class, " \
+              "source, accepted, reason, metadata FROM memory_audit WHERE 1=1"
+        params: List[Any] = []
+        if op:
+            sql += " AND op = ?"
+            params.append(op)
+        if since:
+            sql += " AND ts >= ?"
+            params.append(since)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        if should_close:
+            conn.close()
+
+        return [
+            {
+                "id": r[0],
+                "ts": r[1],
+                "op": r[2],
+                "fact_id": r[3],
+                "content_hash": r[4],
+                "authority_class": r[5],
+                "source": r[6],
+                "accepted": bool(r[7]),
+                "reason": r[8],
+                "metadata": json.loads(r[9]) if r[9] else None,
+            }
+            for r in rows
+        ]
+
+    def anomalies(self, limit: int = 10) -> List[Dict[str, Any]]:
+        return self.get_audit(limit=limit, op="anomaly_detected")
+
+    # ==================== SNAPSHOTS ====================
+
+    def _snapshot_filename(self, label: Optional[str] = None) -> str:
+        ts = self._utc_now().strftime("%Y%m%dT%H%M%S")
+        safe_label = ""
+        if label:
+            safe_label = "-" + "".join(
+                c if c.isalnum() or c in ("-", "_") else "_" for c in label
+            )
+        return f"snapshot-{ts}{safe_label}.db"
+
+    def _backup_to(self, dest_path: Path):
+        """Kopiert die aktuelle DB ueber SQLite's Backup-API nach dest_path."""
+        target = sqlite3.connect(str(dest_path))
+        try:
+            if self._shared_conn is not None:
+                self._shared_conn.backup(target)
+            else:
+                source = sqlite3.connect(self.db_path)
+                try:
+                    source.backup(target)
+                finally:
+                    source.close()
+        finally:
+            target.close()
+
+    def snapshot(self, label: Optional[str] = None) -> str:
+        """Erstellt einen Snapshot der aktuellen DB. Gibt den Pfad zurueck."""
+        path = self._snapshot_dir / self._snapshot_filename(label)
+        self._backup_to(path)
+        self._audit(
+            "snapshot",
+            metadata={"path": str(path), "label": label},
+        )
+        return str(path)
+
+    def list_snapshots(self) -> List[Dict[str, Any]]:
+        if not self._snapshot_dir.exists():
+            return []
+        entries = []
+        for p in sorted(self._snapshot_dir.glob("*.db")):
+            stat = p.stat()
+            entries.append({
+                "path": str(p),
+                "created_at": datetime.fromtimestamp(
+                    stat.st_mtime, tz=timezone.utc
+                ).isoformat(),
+                "size_bytes": stat.st_size,
+                "label": p.stem,
+            })
+        return entries
+
+    def restore(self, snapshot_path: str) -> None:
+        """Restauriert die DB aus einem Snapshot. Erstellt vorher Auto-Backup."""
+        src = Path(snapshot_path)
+        if not src.is_file():
+            raise FileNotFoundError(f"Snapshot nicht gefunden: {snapshot_path}")
+
+        pre_path = self._snapshot_dir / self._snapshot_filename(
+            label=f"pre-restore"
+        )
+        self._backup_to(pre_path)
+
+        source = sqlite3.connect(str(src))
+        try:
+            if self._shared_conn is not None:
+                source.backup(self._shared_conn)
+            else:
+                target = sqlite3.connect(self.db_path)
+                try:
+                    source.backup(target)
+                finally:
+                    target.close()
+        finally:
+            source.close()
+
+        self._audit(
+            "restore",
+            metadata={
+                "snapshot": str(src),
+                "pre_restore_backup": str(pre_path),
+            },
+        )
 
     def export_json(self) -> Dict:
         conn, should_close = self._connect()

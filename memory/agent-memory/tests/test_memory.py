@@ -9,7 +9,12 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from memory import AgentMemory, AUTHORITY_POLICY, REBOUND_MAX_FACTS_AFTER_IDLE
+from memory import (
+    AgentMemory,
+    AUTHORITY_POLICY,
+    REBOUND_MAX_FACTS_AFTER_IDLE,
+    ANOMALY_WRITES_PER_MINUTE,
+)
 
 
 @pytest.fixture
@@ -391,6 +396,179 @@ def test_remember_idempotent_does_not_consume_rebound_budget(mem):
 
     assert fact_id is not None
     assert mem._rebound_write_count == 1
+
+
+# ==================== TEST 9: Audit-Log ====================
+
+def test_audit_logs_successful_write(mem):
+    """Jeder erfolgreiche remember-Insert produziert einen audit-Eintrag op=write."""
+    fact_id = mem.remember(
+        "Audit-relevanter Fakt",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    entries = mem.get_audit(op="write")
+    assert any(e["fact_id"] == fact_id and e["accepted"] for e in entries)
+
+
+def test_audit_logs_policy_reject_with_reason(mem):
+    """Source- und Confidence-Rejects landen mit Grund im Audit-Log."""
+    mem.remember(
+        "Heimlich",
+        authority_class="authorization",
+        source="conversation",
+        confidence=1.0
+    )
+    mem.remember(
+        "Zu unsicher",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.1
+    )
+    rejects = mem.get_audit(op="policy_reject")
+    reasons = {e["reason"] for e in rejects}
+    assert {"source_not_allowed", "low_confidence"}.issubset(reasons)
+    assert all(not e["accepted"] for e in rejects)
+
+
+def test_audit_logs_forget_and_supersede(mem):
+    """forget und supersede schreiben passende audit-Zeilen."""
+    fact_id = mem.remember(
+        "Wird ersetzt",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    new_id = mem.supersede(
+        fact_id,
+        "Neuer Wert",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    mem.forget(new_id)
+
+    ops = {e["op"] for e in mem.get_audit(limit=50)}
+    assert {"supersede", "forget"}.issubset(ops)
+
+    supersede_entries = mem.get_audit(op="supersede")
+    assert supersede_entries[0]["metadata"]["old_id"] == fact_id
+    assert supersede_entries[0]["metadata"]["new_id"] == new_id
+
+
+def test_audit_get_filter_by_op(mem):
+    """get_audit(op=...) filtert exakt."""
+    mem.remember("Fakt A", authority_class="evidence",
+                 source="conversation", confidence=0.9)
+    mem.remember("Fakt B", authority_class="evidence",
+                 source="conversation", confidence=0.9)
+    writes = mem.get_audit(op="write")
+    assert all(e["op"] == "write" for e in writes)
+    assert len(writes) >= 2
+
+
+def test_audit_includes_content_hash(mem):
+    """Audit speichert content_hash separat von fact_id."""
+    mem.remember("Hashbar", authority_class="evidence",
+                 source="conversation", confidence=0.9)
+    entries = mem.get_audit(op="write")
+    expected = __import__("hashlib").sha256(b"Hashbar").hexdigest()
+    assert entries[0]["content_hash"] == expected
+
+
+# ==================== TEST 10: Snapshots / Restore ====================
+
+def test_snapshot_creates_file_with_metadata(file_mem):
+    """snapshot() legt eine Datei an, list_snapshots zeigt sie."""
+    file_mem.remember("Persistenter Fakt", authority_class="identity",
+                      source="observation", confidence=1.0)
+    path = file_mem.snapshot(label="manual")
+    assert Path(path).is_file()
+
+    snaps = file_mem.list_snapshots()
+    paths = [s["path"] for s in snaps]
+    assert path in paths
+    target = next(s for s in snaps if s["path"] == path)
+    assert target["size_bytes"] > 0
+
+
+def test_snapshot_restore_roundtrip(file_mem):
+    """Nach Restore tauchen geloeschte Facts wieder auf."""
+    fact_id = file_mem.remember(
+        "Wird geloescht und wiederhergestellt",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    snap_path = file_mem.snapshot(label="before-delete")
+
+    file_mem.forget(fact_id)
+    assert file_mem.get_fact(fact_id) is None
+
+    file_mem.restore(snap_path)
+
+    restored = file_mem.get_fact(fact_id)
+    assert restored is not None
+    assert restored.content == "Wird geloescht und wiederhergestellt"
+
+
+def test_restore_creates_pre_restore_backup(file_mem):
+    """restore() erzeugt vorher einen pre-restore-Auto-Snapshot."""
+    file_mem.remember("Original", authority_class="identity",
+                      source="observation", confidence=1.0)
+    snap_path = file_mem.snapshot(label="first")
+
+    before_count = len(file_mem.list_snapshots())
+    file_mem.restore(snap_path)
+    after = file_mem.list_snapshots()
+    assert len(after) >= before_count + 1
+    labels = " ".join(s["label"] for s in after)
+    assert "pre-restore" in labels
+
+
+# ==================== TEST 11: Anomaly Detection ====================
+
+def test_anomaly_detected_on_burst(mem):
+    """Mehr Writes als ANOMALY_WRITES_PER_MINUTE in 60s loggt eine Anomalie."""
+    for i in range(ANOMALY_WRITES_PER_MINUTE + 5):
+        mem.remember(
+            f"Burst Fakt {i}",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+    anomalies = mem.anomalies()
+    assert len(anomalies) >= 1
+    assert anomalies[0]["op"] == "anomaly_detected"
+
+
+def test_anomalies_api_returns_recent(mem):
+    """anomalies() liefert nur op=anomaly_detected, neueste zuerst."""
+    for i in range(ANOMALY_WRITES_PER_MINUTE + 2):
+        mem.remember(
+            f"Spam {i}",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+    anomalies = mem.anomalies(limit=5)
+    assert anomalies, "Erwartete mindestens eine Anomalie"
+    assert all(a["op"] == "anomaly_detected" for a in anomalies)
+
+
+def test_anomaly_does_not_block_writes(mem):
+    """Anomalie ist Telemetrie — Schreiben funktioniert weiter."""
+    last_id = None
+    for i in range(ANOMALY_WRITES_PER_MINUTE + 3):
+        last_id = mem.remember(
+            f"Weiter geht es {i}",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+    assert last_id is not None
+    assert mem.get_fact(last_id) is not None
 
 
 if __name__ == "__main__":
