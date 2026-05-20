@@ -320,5 +320,78 @@ def test_memory_db_does_not_use_wal(mem):
     assert mode != "wal"
 
 
+# ==================== TEST 8: Idempotente remember() ====================
+
+def test_generate_id_stable_across_time(mem):
+    """_generate_id liefert deterministisch denselben Hash."""
+    a = mem._generate_id("Perry ist der Username", "identity")
+    b = mem._generate_id("Perry ist der Username", "identity")
+    assert a == b
+
+
+def test_remember_same_content_returns_same_id(mem):
+    """Doppeltes remember mit gleichem Text+Lane liefert dieselbe id und bumpt access_count."""
+    first = mem.remember(
+        "Mag kurze Antworten",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    second = mem.remember(
+        "Mag kurze Antworten",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    assert first is not None
+    assert first == second
+
+    cursor = mem._shared_conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*), MAX(access_count) FROM facts WHERE id = ?",
+        (first,)
+    )
+    count, access_count = cursor.fetchone()
+    assert count == 1
+    assert access_count >= 2
+
+
+def test_remember_same_content_different_lane_distinct_ids(mem):
+    """Gleicher Text in unterschiedlichen Lanes ergibt unterschiedliche Facts."""
+    identity_id = mem.remember(
+        "Lieblingsfarbe ist blau",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0
+    )
+    preference_id = mem.remember(
+        "Lieblingsfarbe ist blau",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    assert identity_id is not None
+    assert preference_id is not None
+    assert identity_id != preference_id
+
+
+def test_remember_idempotent_does_not_consume_rebound_budget(mem):
+    """Im Rebound-Modus zaehlt eine wiederholte Idempotenz nicht gegen den Cap."""
+    mem._rebound_active = True
+    mem._rebound_write_count = 0
+
+    fact_id = None
+    for _ in range(REBOUND_MAX_FACTS_AFTER_IDLE + 3):
+        fact_id = mem.remember(
+            "Selber Fakt immer wieder",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+
+    assert fact_id is not None
+    assert mem._rebound_write_count == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

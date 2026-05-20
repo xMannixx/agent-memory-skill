@@ -299,9 +299,11 @@ class AgentMemory:
         if should_close:
             conn.close()
 
-    def _generate_id(self, content: str) -> str:
-        timestamp = self._now()
-        return hashlib.sha256(f"{content}{timestamp}".encode()).hexdigest()[:12]
+    def _generate_id(self, content: str, authority_class: str = "evidence") -> str:
+        """Deterministische Content-Hash-ID. Gleicher Text in gleicher Lane = gleicher Fakt."""
+        normalized = content.strip()
+        payload = f"{authority_class}:{normalized}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()[:12]
 
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -380,13 +382,30 @@ class AgentMemory:
         if confidence < policy["min_confidence"]:
             return None
 
-        # Rebound-Protection (identity = Floor, immer erlaubt)
+        fact_id = self._generate_id(content, authority_class)
+
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,))
+        exists = cursor.fetchone() is not None
+
+        if exists:
+            self._touch(conn, [fact_id])
+            conn.commit()
+            if should_close:
+                conn.close()
+            self._session_write_count += 1
+            self._log_write()
+            return fact_id
+
+        # Rebound-Protection nur bei echten neuen Facts (identity = Floor, immer erlaubt)
         if self._rebound_active and authority_class != "identity":
             if self._rebound_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
+                if should_close:
+                    conn.close()
                 return None
             self._rebound_write_count += 1
 
-        fact_id = self._generate_id(content)
         now = self._now()
         tags = tags or []
 
@@ -396,9 +415,6 @@ class AgentMemory:
         expires_at = None
         if expires_in_days:
             expires_at = (self._utc_now() + timedelta(days=expires_in_days)).isoformat()
-
-        conn, should_close = self._connect()
-        cursor = conn.cursor()
 
         cursor.execute("""
             INSERT INTO facts (id, content, tags, source, confidence,
