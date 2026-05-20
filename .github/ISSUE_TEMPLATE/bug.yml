@@ -1,0 +1,52 @@
+name: Bug report
+description: Report incorrect behavior, data corruption risk, or regressions.
+title: "fix: "
+labels: ["type:bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: "Describe the bug in one or two sentences."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1. 
+        2. 
+        3. 
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "What should have happened?"
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: "What happened instead?"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - OS:
+        - Python:
+        - Hermes:
+        - agent-memory-skill commit:
+  - type: textarea
+    id: data-risk
+    attributes:
+      label: Data risk
+      description: Could this affect existing memory data?
+      placeholder: "Mention possible data loss, stale recall, wrong cleanup, duplicate facts, or migration risks."

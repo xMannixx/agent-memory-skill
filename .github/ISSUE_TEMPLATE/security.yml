@@ -1,0 +1,50 @@
+name: Security or memory-poisoning concern
+description: Report or design around prompt injection, memory poisoning, authorization leakage, or recovery controls.
+title: "security: "
+labels: ["area:security"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not publish sensitive exploit details if the issue could expose a real user, credential, or private system.
+  - type: textarea
+    id: threat-model
+    attributes:
+      label: Threat model
+      description: What attacker, input source, or trust boundary is involved?
+      placeholder: "Example: malicious external document tries to write authorization memory."
+    validations:
+      required: true
+  - type: checkboxes
+    id: affected-lanes
+    attributes:
+      label: Affected authority lanes
+      options:
+        - label: identity
+        - label: preference
+        - label: evidence
+        - label: authorization
+        - label: lessons
+        - label: entities
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: What could go wrong if this is exploited?
+      placeholder: "Privilege escalation, prompt injection persistence, data exfiltration, stale false facts, etc."
+    validations:
+      required: true
+  - type: textarea
+    id: mitigation
+    attributes:
+      label: Proposed mitigation
+      description: What control should be added or changed?
+      value: |
+        - [ ] 
+        - [ ] 
+        - [ ] 
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      placeholder: "Tests, audit entries, rollback proof, negative prompt-injection cases."
