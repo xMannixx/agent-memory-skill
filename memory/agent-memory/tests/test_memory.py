@@ -3,9 +3,10 @@ Tests für AgentMemory — analog zu Lenas pytest 6/6
 """
 
 import sys
+import sqlite3
 import pytest
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from memory import AgentMemory, AUTHORITY_POLICY, REBOUND_MAX_FACTS_AFTER_IDLE
@@ -128,8 +129,7 @@ def test_forget_stale_respects_classes(mem):
         confidence=1.0
     )
 
-    # preference-Fakt direkt mit expires_in_days=0 anlegen (sofort abgelaufen)
-    from datetime import timedelta
+    # preference-Fakt direkt mit kurzer TTL anlegen und dann manuell ablaufen lassen
     fact_id = mem.remember(
         "Mag Dunkelmodus",
         authority_class="preference",
@@ -143,7 +143,7 @@ def test_forget_stale_respects_classes(mem):
     conn = mem._shared_conn if mem._shared_conn else sqlite3.connect(mem.db_path)
     should_close = mem._shared_conn is None
     cursor = conn.cursor()
-    past = (datetime.utcnow() - timedelta(days=20)).isoformat()
+    past = (datetime.now(timezone.utc) - timedelta(days=20)).isoformat()
     cursor.execute(
         "UPDATE facts SET last_accessed = ?, expires_at = ? WHERE id = ?",
         (past, past, fact_id)
@@ -160,6 +160,87 @@ def test_forget_stale_respects_classes(mem):
 
     # preference wurde gelöscht
     assert deleted.get("preference", 0) >= 1
+
+
+def test_recall_by_authority_touches_access_metadata(mem):
+    """Plugin-Hauptpfad aktualisiert last_accessed und verlängert Sliding-TTL."""
+    fact_id = mem.remember(
+        "Mag kurze direkte Antworten",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    assert fact_id is not None
+
+    conn = mem._shared_conn if mem._shared_conn else sqlite3.connect(mem.db_path)
+    should_close = mem._shared_conn is None
+    cursor = conn.cursor()
+    past = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    old_expiry = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    cursor.execute(
+        "UPDATE facts SET last_accessed = ?, expires_at = ? WHERE id = ?",
+        (past, old_expiry, fact_id)
+    )
+    conn.commit()
+
+    facts = mem.recall_by_authority("preference")
+    assert any(f.id == fact_id for f in facts)
+
+    cursor.execute(
+        "SELECT last_accessed, expires_at, access_count FROM facts WHERE id = ?",
+        (fact_id,)
+    )
+    last_accessed, expires_at, access_count = cursor.fetchone()
+    if should_close:
+        conn.close()
+
+    assert datetime.fromisoformat(last_accessed) > datetime.fromisoformat(past)
+    assert datetime.fromisoformat(expires_at) > datetime.fromisoformat(old_expiry)
+    assert access_count == 2
+
+
+def test_forget_removes_fact_from_fts(mem):
+    """FTS bleibt nach einem delete synchron und liefert keine orphaned Treffer."""
+    fact_id = mem.remember(
+        "Einzigartiger FTS Loeschtest",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    assert fact_id is not None
+    assert len(mem.recall("Loeschtest")) == 1
+
+    mem.forget(fact_id)
+
+    assert mem.recall("Loeschtest") == []
+
+
+def test_log_write_uses_single_memory_meta_row(mem):
+    """Write-Tracking nutzt eine einzelne memory_meta-Zeile statt wachsender Logs."""
+    for i in range(3):
+        fact_id = mem.remember(
+            f"Session Meta Fakt {i}",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+        assert fact_id is not None
+
+    conn = mem._shared_conn if mem._shared_conn else sqlite3.connect(mem.db_path)
+    should_close = mem._shared_conn is None
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM memory_meta WHERE key = 'last_write'")
+    last_write_rows = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'session_log'
+    """)
+    session_log_tables = cursor.fetchone()[0]
+    if should_close:
+        conn.close()
+
+    assert last_write_rows == 1
+    assert session_log_tables == 0
 
 
 # ==================== TEST 6: Lektionen und Entities ====================

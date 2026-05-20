@@ -11,7 +11,7 @@ MIT License
 import sqlite3
 import json
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from dataclasses import dataclass, asdict
@@ -111,7 +111,8 @@ class AgentMemory:
 
         self.db_path = db_path
         self._session_write_count = 0
-        self._session_start = datetime.utcnow()
+        self._rebound_write_count = 0
+        self._session_start = self._utc_now()
         self._rebound_active = False
 
         # Shared connection für :memory: (Tests) — SQLite in-memory
@@ -182,21 +183,68 @@ class AgentMemory:
         """)
 
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_start TEXT NOT NULL,
-                last_write TEXT
-            )
-        """)
-
-        cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
             USING fts5(content, tags, tokenize='porter')
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS memory_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+
+        self._migrate_session_log(cursor)
+        self._cleanup_fts_orphans(cursor)
+        self._create_fts_triggers(cursor)
+
         conn.commit()
         if should_close:
             conn.close()
+
+    def _migrate_session_log(self, cursor):
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type = 'table' AND name = 'session_log'
+        """)
+        if not cursor.fetchone():
+            return
+
+        cursor.execute(
+            "SELECT last_write FROM session_log WHERE last_write IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            cursor.execute("""
+                INSERT OR REPLACE INTO memory_meta (key, value)
+                VALUES ('last_write', ?)
+            """, (row[0],))
+        cursor.execute("DROP TABLE session_log")
+
+    def _cleanup_fts_orphans(self, cursor):
+        cursor.execute("""
+            DELETE FROM facts_fts
+            WHERE rowid NOT IN (SELECT rowid FROM facts)
+        """)
+
+    def _create_fts_triggers(self, cursor):
+        cursor.executescript("""
+            CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
+                INSERT INTO facts_fts(rowid, content, tags)
+                VALUES (new.rowid, new.content, new.tags);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS facts_ad AFTER DELETE ON facts BEGIN
+                DELETE FROM facts_fts WHERE rowid = old.rowid;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
+                DELETE FROM facts_fts WHERE rowid = old.rowid;
+                INSERT INTO facts_fts(rowid, content, tags)
+                VALUES (new.rowid, new.content, new.tags);
+            END;
+        """)
 
     def _check_rebound(self):
         """
@@ -207,35 +255,75 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT last_write FROM session_log ORDER BY id DESC LIMIT 1"
+            "SELECT value FROM memory_meta WHERE key = 'last_write'"
         )
         row = cursor.fetchone()
         if should_close:
             conn.close()
 
         if row and row[0]:
-            last_write = datetime.fromisoformat(row[0])
-            idle_hours = (datetime.utcnow() - last_write).total_seconds() / 3600
+            last_write = self._parse_time(row[0])
+            idle_hours = (self._utc_now() - last_write).total_seconds() / 3600
             if idle_hours > REBOUND_IDLE_THRESHOLD_HOURS:
                 self._rebound_active = True
 
     def _log_write(self):
         conn, should_close = self._connect()
         cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO session_log (session_start, last_write) VALUES (?, ?)",
-            (self._session_start.isoformat(), self._now())
-        )
+        cursor.execute("""
+            INSERT OR REPLACE INTO memory_meta (key, value)
+            VALUES ('last_write', ?)
+        """, (self._now(),))
         conn.commit()
         if should_close:
             conn.close()
 
     def _generate_id(self, content: str) -> str:
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = self._now()
         return hashlib.sha256(f"{content}{timestamp}".encode()).hexdigest()[:12]
 
+    def _utc_now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
     def _now(self) -> str:
-        return datetime.utcnow().isoformat()
+        return self._utc_now().isoformat()
+
+    def _parse_time(self, value: str) -> datetime:
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _expires_at_for_policy(self, policy: Dict[str, Any]) -> Optional[str]:
+        if policy["ttl_days"] is None:
+            return None
+        return (self._utc_now() + timedelta(days=policy["ttl_days"])).isoformat()
+
+    def _touch(self, conn, fact_ids: List[str]):
+        if not fact_ids:
+            return
+
+        cursor = conn.cursor()
+        now = self._now()
+        for fact_id in fact_ids:
+            cursor.execute(
+                "SELECT authority_class FROM facts WHERE id = ?",
+                (fact_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                continue
+
+            policy = AUTHORITY_POLICY.get(row[0], AUTHORITY_POLICY["evidence"])
+            expires_at = self._expires_at_for_policy(policy)
+            cursor.execute("""
+                UPDATE facts
+                SET last_accessed = ?,
+                    expires_at = ?,
+                    access_count = access_count + 1
+                WHERE id = ?
+            """, (now, expires_at, fact_id))
+
 
     def _row_to_fact(self, row) -> Fact:
         return Fact(
@@ -273,9 +361,9 @@ class AgentMemory:
 
         # Rebound-Protection (identity = Floor, immer erlaubt)
         if self._rebound_active and authority_class != "identity":
-            if self._session_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
+            if self._rebound_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
                 return None
-            self._session_write_count += 1
+            self._rebound_write_count += 1
 
         fact_id = self._generate_id(content)
         now = self._now()
@@ -286,7 +374,7 @@ class AgentMemory:
 
         expires_at = None
         if expires_in_days:
-            expires_at = (datetime.utcnow() + timedelta(days=expires_in_days)).isoformat()
+            expires_at = (self._utc_now() + timedelta(days=expires_in_days)).isoformat()
 
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -299,15 +387,11 @@ class AgentMemory:
         """, (fact_id, content, json.dumps(tags), source, confidence,
               authority_class, now, now, expires_at))
 
-        cursor.execute("""
-            INSERT INTO facts_fts (rowid, content, tags)
-            SELECT rowid, content, tags FROM facts WHERE id = ?
-        """, (fact_id,))
-
         conn.commit()
         if should_close:
             conn.close()
 
+        self._session_write_count += 1
         self._log_write()
         return fact_id
 
@@ -343,10 +427,7 @@ class AgentMemory:
             if tags and not all(t in fact.tags for t in tags):
                 continue
             facts.append(fact)
-            cursor.execute("""
-                UPDATE facts SET last_accessed = ?, access_count = access_count + 1
-                WHERE id = ?
-            """, (self._now(), fact.id))
+        self._touch(conn, [fact.id for fact in facts])
 
         conn.commit()
         if should_close:
@@ -364,15 +445,23 @@ class AgentMemory:
             ORDER BY last_accessed DESC LIMIT ?
         """, (authority_class, self._now(), limit))
         rows = cursor.fetchall()
+        facts = [self._row_to_fact(r) for r in rows]
+        self._touch(conn, [fact.id for fact in facts])
+        conn.commit()
         if should_close:
             conn.close()
-        return [self._row_to_fact(r) for r in rows]
+        return facts
 
     def get_fact(self, fact_id: str) -> Optional[Fact]:
         conn, should_close = self._connect()
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))
         row = cursor.fetchone()
+        if row:
+            self._touch(conn, [fact_id])
+            cursor.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))
+            row = cursor.fetchone()
+            conn.commit()
         if should_close:
             conn.close()
         return self._row_to_fact(row) if row else None
@@ -446,18 +535,14 @@ class AgentMemory:
                 deleted[cls] = 0
                 continue
 
-            cutoff = (datetime.utcnow() - timedelta(days=policy["ttl_days"])).isoformat()
             cursor.execute("""
                 DELETE FROM facts
                 WHERE authority_class = ?
-                AND last_accessed < ?
+                AND expires_at IS NOT NULL
+                AND expires_at < ?
                 AND superseded_by IS NULL
-            """, (cls, cutoff))
+            """, (cls, self._now()))
             deleted[cls] = cursor.rowcount
-
-        cursor.execute("""
-            DELETE FROM facts_fts WHERE rowid NOT IN (SELECT rowid FROM facts)
-        """)
 
         conn.commit()
         if should_close:
@@ -683,6 +768,10 @@ class AgentMemory:
             "entities": entities,
             "rebound_active": self._rebound_active,
             "session_writes": self._session_write_count,
+            "rebound_remaining": max(
+                0,
+                REBOUND_MAX_FACTS_AFTER_IDLE - self._rebound_write_count
+            ) if self._rebound_active else None,
         }
 
     def export_json(self) -> Dict:

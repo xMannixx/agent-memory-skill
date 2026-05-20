@@ -75,7 +75,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests/test_memory.py -v
-# Expected: 9/9 passed
+# Expected: 12/12 passed
 ```
 
 ## Authority Lanes
@@ -91,6 +91,13 @@ python3 -m pytest tests/test_memory.py -v
 
 After >6h idle: max 3 new facts accepted per session (except identity).
 Prevents memory flooding after long offline phases.
+
+## Sliding TTL
+
+Non-identity facts expire by last access, not only by creation time. `recall()`,
+`recall_by_authority()`, and `get_fact()` all refresh `last_accessed` and extend
+`expires_at` according to the fact's authority lane. This keeps facts alive when
+the auto-injection plugin actively uses them.
 
 ## Python Usage
 
@@ -170,7 +177,7 @@ No manual loading required.
 
 - On some systems `python` is not in PATH — use `python3` or full venv path.
 - SQLite `:memory:` loses data when connection closes. Tests use `_shared_conn` pattern — do not change connection logic without understanding this.
-- `_check_rebound()` must run after `_init_db()` — session_log table must exist first.
+- `_check_rebound()` must run after `_init_db()` — `memory_meta` must exist first.
 - `startup_skills` alone is NOT enough for auto-injection. The plugin with `pre_llm_call` hook is required.
 - `authorization` facts from `conversation` source are silently rejected by design.
 
@@ -178,6 +185,7 @@ No manual loading required.
 
 - **Floor (identity)** never decays — idle periods must not lower the entry threshold.
 - **Rebound-Cap**: After >6h idle, max 3 new facts — prevents memory flooding. Identity is exempt.
+- **Sliding TTL**: Read access refreshes non-identity expiry, so active facts survive cleanup.
 - **Timer as compactor only** — writing is event-driven (on `remember()`), not time-based.
 - **authorization only from observation** — prevents privilege escalation via conversation.
 - **forget_stale() class-aware** — identity: never, preference: 14d, evidence: 60d, authorization: 90d.

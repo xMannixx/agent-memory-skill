@@ -123,6 +123,7 @@ def main():
         print(f"Lektionen:        {s['lessons']}")
         print(f"Entities:         {s['entities']}")
         print(f"Rebound aktiv:    {s['rebound_active']}")
+        print(f"Rebound Rest:     {s['rebound_remaining']}")
         print(f"Session Writes:   {s['session_writes']}")
         print(f"Nach Klasse:")
         for cls, count in s.get("by_class", {}).items():
