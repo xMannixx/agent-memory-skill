@@ -12,7 +12,6 @@ import sqlite3
 import json
 import hashlib
 import tempfile
-import shutil
 from types import MappingProxyType
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
@@ -54,6 +53,9 @@ REBOUND_MAX_FACTS_AFTER_IDLE = 3
 ANOMALY_WRITES_PER_MINUTE = 20
 ANOMALY_WINDOW_SECONDS = 60
 
+LESSON_TTL_DAYS = 180
+ENTITY_TTL_DAYS = 365
+
 
 @dataclass
 class Fact:
@@ -81,6 +83,8 @@ class Lesson:
     outcome: str
     insight: str
     created_at: str
+    last_accessed: str
+    expires_at: Optional[str]
     applied_count: int = 0
 
 
@@ -92,6 +96,8 @@ class Entity:
     attributes: Dict[str, Any]
     first_seen: str
     last_updated: str
+    last_accessed: str
+    expires_at: Optional[str]
     fact_ids: List[str]
 
 
@@ -180,9 +186,13 @@ class AgentMemory:
                 outcome TEXT NOT NULL,
                 insight TEXT NOT NULL,
                 created_at TEXT NOT NULL,
+                last_accessed TEXT,
+                expires_at TEXT,
                 applied_count INTEGER DEFAULT 0
             )
         """)
+
+        self._migrate_lessons_lifecycle(cursor)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS entities (
@@ -192,9 +202,13 @@ class AgentMemory:
                 attributes TEXT,
                 first_seen TEXT NOT NULL,
                 last_updated TEXT NOT NULL,
+                last_accessed TEXT,
+                expires_at TEXT,
                 fact_ids TEXT
             )
         """)
+
+        self._migrate_entities_lifecycle(cursor)
 
         cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
@@ -245,6 +259,10 @@ class AgentMemory:
                 ON lessons(outcome, created_at);
             CREATE INDEX IF NOT EXISTS idx_entities_type_name
                 ON entities(entity_type, name);
+            CREATE INDEX IF NOT EXISTS idx_lessons_expires
+                ON lessons(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_entities_expires
+                ON entities(expires_at);
             CREATE INDEX IF NOT EXISTS idx_audit_ts
                 ON memory_audit(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_op
@@ -255,6 +273,42 @@ class AgentMemory:
         if self.db_path == ":memory:":
             return
         cursor.execute("PRAGMA journal_mode=WAL")
+
+    def _migrate_lessons_lifecycle(self, cursor):
+        cursor.execute("PRAGMA table_info(lessons)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "last_accessed" not in columns:
+            cursor.execute("ALTER TABLE lessons ADD COLUMN last_accessed TEXT")
+        if "expires_at" not in columns:
+            cursor.execute("ALTER TABLE lessons ADD COLUMN expires_at TEXT")
+
+        expires_at = (
+            f"datetime(created_at, '+{LESSON_TTL_DAYS} days')"
+        )
+        cursor.execute("""
+            UPDATE lessons
+            SET last_accessed = COALESCE(last_accessed, created_at),
+                expires_at = COALESCE(expires_at, {})
+            WHERE last_accessed IS NULL OR expires_at IS NULL
+        """.format(expires_at))
+
+    def _migrate_entities_lifecycle(self, cursor):
+        cursor.execute("PRAGMA table_info(entities)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "last_accessed" not in columns:
+            cursor.execute("ALTER TABLE entities ADD COLUMN last_accessed TEXT")
+        if "expires_at" not in columns:
+            cursor.execute("ALTER TABLE entities ADD COLUMN expires_at TEXT")
+
+        expires_at = (
+            f"datetime(last_updated, '+{ENTITY_TTL_DAYS} days')"
+        )
+        cursor.execute("""
+            UPDATE entities
+            SET last_accessed = COALESCE(last_accessed, last_updated),
+                expires_at = COALESCE(expires_at, {})
+            WHERE last_accessed IS NULL OR expires_at IS NULL
+        """.format(expires_at))
 
     def _migrate_session_log(self, cursor):
         cursor.execute("""
@@ -424,6 +478,9 @@ class AgentMemory:
             return None
         return (self._utc_now() + timedelta(days=policy["ttl_days"])).isoformat()
 
+    def _expires_at_for_days(self, days: int) -> str:
+        return (self._utc_now() + timedelta(days=days)).isoformat()
+
     def _touch(self, conn, fact_ids: List[str]):
         if not fact_ids:
             return
@@ -470,13 +527,58 @@ class AgentMemory:
             f"{prefix}superseded_by"
         )
 
+    def _lesson_select_columns(self) -> str:
+        return (
+            "id, action, context, outcome, insight, created_at, "
+            "last_accessed, expires_at, applied_count"
+        )
+
+    def _entity_select_columns(self) -> str:
+        return (
+            "id, name, entity_type, attributes, first_seen, last_updated, "
+            "last_accessed, expires_at, fact_ids"
+        )
+
+    def _row_to_lesson(self, row) -> Lesson:
+        return Lesson(
+            id=row[0], action=row[1], context=row[2],
+            outcome=row[3], insight=row[4], created_at=row[5],
+            last_accessed=row[6], expires_at=row[7],
+            applied_count=row[8]
+        )
+
     def _row_to_entity(self, row) -> Entity:
         return Entity(
             id=row[0], name=row[1], entity_type=row[2],
             attributes=json.loads(row[3] or "{}"),
             first_seen=row[4], last_updated=row[5],
-            fact_ids=json.loads(row[6] or "[]")
+            last_accessed=row[6], expires_at=row[7],
+            fact_ids=json.loads(row[8] or "[]")
         )
+
+    def _touch_lesson_ids(self, conn, lesson_ids: List[str]):
+        if not lesson_ids:
+            return
+        now = self._now()
+        expires_at = self._expires_at_for_days(LESSON_TTL_DAYS)
+        conn.executemany("""
+            UPDATE lessons
+            SET last_accessed = ?,
+                expires_at = ?
+            WHERE id = ?
+        """, [(now, expires_at, lesson_id) for lesson_id in lesson_ids])
+
+    def _touch_entity_ids(self, conn, entity_ids: List[str]):
+        if not entity_ids:
+            return
+        now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
+        conn.executemany("""
+            UPDATE entities
+            SET last_accessed = ?,
+                expires_at = ?
+            WHERE id = ?
+        """, [(now, expires_at, entity_id) for entity_id in entity_ids])
 
     # ==================== FACTS ====================
 
@@ -786,12 +888,20 @@ class AgentMemory:
 
     def learn(self, action: str, context: str, outcome: str, insight: str) -> str:
         lesson_id = self._generate_id(f"{action}{context}")
+        now = self._now()
+        expires_at = self._expires_at_for_days(LESSON_TTL_DAYS)
         conn, should_close = self._connect()
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT INTO lessons (id, action, context, outcome, insight, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (lesson_id, action, context, outcome, insight, self._now()))
+            INSERT INTO lessons (
+                id, action, context, outcome, insight, created_at,
+                last_accessed, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            lesson_id, action, context, outcome, insight,
+            now, now, expires_at
+        ))
         conn.commit()
         if should_close:
             conn.close()
@@ -802,7 +912,7 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
-        sql = "SELECT * FROM lessons WHERE 1=1"
+        sql = f"SELECT {self._lesson_select_columns()} FROM lessons WHERE 1=1"
         params = []
 
         if context:
@@ -817,15 +927,12 @@ class AgentMemory:
 
         cursor.execute(sql, params)
         rows = cursor.fetchall()
+        self._touch_lesson_ids(conn, [row[0] for row in rows])
+        conn.commit()
         if should_close:
             conn.close()
 
-        return [
-            Lesson(id=r[0], action=r[1], context=r[2],
-                   outcome=r[3], insight=r[4], created_at=r[5],
-                   applied_count=r[6])
-            for r in rows
-        ]
+        return [self._row_to_lesson(r) for r in rows]
 
     def apply_lesson(self, lesson_id: str):
         conn, should_close = self._connect()
@@ -834,6 +941,7 @@ class AgentMemory:
             "UPDATE lessons SET applied_count = applied_count + 1 WHERE id = ?",
             (lesson_id,)
         )
+        self._touch_lesson_ids(conn, [lesson_id])
         conn.commit()
         if should_close:
             conn.close()
@@ -844,6 +952,7 @@ class AgentMemory:
                      attributes: Dict[str, Any] = None) -> str:
         entity_id = self._generate_id(f"{entity_type}:{name}")
         now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
         attributes = attributes or {}
 
         conn, should_close = self._connect()
@@ -859,16 +968,21 @@ class AgentMemory:
             merged_attributes = json.loads(existing[1] or "{}")
             merged_attributes.update(attributes)
             cursor.execute(
-                "UPDATE entities SET attributes = ?, last_updated = ? WHERE id = ?",
-                (json.dumps(merged_attributes), now, existing[0])
+                "UPDATE entities SET attributes = ?, last_updated = ?, "
+                "last_accessed = ?, expires_at = ? WHERE id = ?",
+                (json.dumps(merged_attributes), now, now, expires_at, existing[0])
             )
             entity_id = existing[0]
         else:
             cursor.execute("""
                 INSERT INTO entities (id, name, entity_type, attributes,
-                                     first_seen, last_updated, fact_ids)
-                VALUES (?, ?, ?, ?, ?, ?, '[]')
-            """, (entity_id, name, entity_type, json.dumps(attributes), now, now))
+                                     first_seen, last_updated, last_accessed,
+                                     expires_at, fact_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]')
+            """, (
+                entity_id, name, entity_type, json.dumps(attributes),
+                now, now, now, expires_at
+            ))
 
         conn.commit()
         if should_close:
@@ -881,13 +995,27 @@ class AgentMemory:
 
         if entity_type:
             cursor.execute(
-                "SELECT * FROM entities WHERE name = ? AND entity_type = ?",
+                f"SELECT {self._entity_select_columns()} "
+                "FROM entities WHERE name = ? AND entity_type = ?",
                 (name, entity_type)
             )
         else:
-            cursor.execute("SELECT * FROM entities WHERE name = ?", (name,))
+            cursor.execute(
+                f"SELECT {self._entity_select_columns()} "
+                "FROM entities WHERE name = ?",
+                (name,)
+            )
 
         row = cursor.fetchone()
+        if row:
+            self._touch_entity_ids(conn, [row[0]])
+            cursor.execute(
+                f"SELECT {self._entity_select_columns()} "
+                "FROM entities WHERE id = ?",
+                (row[0],)
+            )
+            row = cursor.fetchone()
+            conn.commit()
         if should_close:
             conn.close()
 
@@ -912,11 +1040,17 @@ class AgentMemory:
 
         existing = json.loads(row[1] or "{}")
         existing.update(attributes)
+        now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
         cursor.execute(
-            "UPDATE entities SET attributes = ?, last_updated = ? WHERE id = ?",
-            (json.dumps(existing), self._now(), row[0])
+            "UPDATE entities SET attributes = ?, last_updated = ?, "
+            "last_accessed = ?, expires_at = ? WHERE id = ?",
+            (json.dumps(existing), now, now, expires_at, row[0])
         )
-        cursor.execute("SELECT * FROM entities WHERE id = ?", (row[0],))
+        cursor.execute(
+            f"SELECT {self._entity_select_columns()} FROM entities WHERE id = ?",
+            (row[0],)
+        )
         updated = cursor.fetchone()
         conn.commit()
         if should_close:
@@ -933,8 +1067,14 @@ class AgentMemory:
             if fact_id not in fact_ids:
                 fact_ids.append(fact_id)
                 cursor.execute(
-                    "UPDATE entities SET fact_ids = ? WHERE id = ?",
-                    (json.dumps(fact_ids), row[0])
+                    "UPDATE entities SET fact_ids = ?, last_accessed = ?, "
+                    "expires_at = ? WHERE id = ?",
+                    (
+                        json.dumps(fact_ids),
+                        self._now(),
+                        self._expires_at_for_days(ENTITY_TTL_DAYS),
+                        row[0],
+                    )
                 )
         conn.commit()
         if should_close:
@@ -946,16 +1086,57 @@ class AgentMemory:
 
         if entity_type:
             cursor.execute(
-                "SELECT * FROM entities WHERE entity_type = ? ORDER BY last_updated DESC",
+                f"SELECT {self._entity_select_columns()} FROM entities "
+                "WHERE entity_type = ? ORDER BY last_updated DESC",
                 (entity_type,)
             )
         else:
-            cursor.execute("SELECT * FROM entities ORDER BY last_updated DESC")
+            cursor.execute(
+                f"SELECT {self._entity_select_columns()} "
+                "FROM entities ORDER BY last_updated DESC"
+            )
 
         rows = cursor.fetchall()
         if should_close:
             conn.close()
         return [self._row_to_entity(r) for r in rows]
+
+    def forget_stale_lifecycle(self) -> Dict[str, int]:
+        """Cleanup fuer abgelaufene Lessons und Entities."""
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        deleted = {}
+
+        cursor.execute("""
+            DELETE FROM lessons
+            WHERE expires_at IS NOT NULL
+            AND expires_at < ?
+        """, (self._now(),))
+        deleted["lessons"] = cursor.rowcount
+        if deleted["lessons"]:
+            self._audit(
+                "forget_stale_lifecycle",
+                metadata={"type": "lessons", "removed": deleted["lessons"]},
+                conn=conn,
+            )
+
+        cursor.execute("""
+            DELETE FROM entities
+            WHERE expires_at IS NOT NULL
+            AND expires_at < ?
+        """, (self._now(),))
+        deleted["entities"] = cursor.rowcount
+        if deleted["entities"]:
+            self._audit(
+                "forget_stale_lifecycle",
+                metadata={"type": "entities", "removed": deleted["entities"]},
+                conn=conn,
+            )
+
+        conn.commit()
+        if should_close:
+            conn.close()
+        return deleted
 
     # ==================== UTILITIES ====================
 
@@ -1135,20 +1316,22 @@ class AgentMemory:
         cursor.execute(f"SELECT {self._fact_select_columns()} FROM facts")
         facts = [self._row_to_fact(r).to_dict() for r in cursor.fetchall()]
 
-        cursor.execute("SELECT * FROM lessons")
+        cursor.execute(f"SELECT {self._lesson_select_columns()} FROM lessons")
         lessons = [
             {"id": r[0], "action": r[1], "context": r[2],
              "outcome": r[3], "insight": r[4], "created_at": r[5],
-             "applied_count": r[6]}
+             "last_accessed": r[6], "expires_at": r[7],
+             "applied_count": r[8]}
             for r in cursor.fetchall()
         ]
 
-        cursor.execute("SELECT * FROM entities")
+        cursor.execute(f"SELECT {self._entity_select_columns()} FROM entities")
         entities = [
             {"id": r[0], "name": r[1], "entity_type": r[2],
              "attributes": json.loads(r[3] or "{}"),
              "first_seen": r[4], "last_updated": r[5],
-             "fact_ids": json.loads(r[6] or "[]")}
+             "last_accessed": r[6], "expires_at": r[7],
+             "fact_ids": json.loads(r[8] or "[]")}
             for r in cursor.fetchall()
         ]
 

@@ -4,6 +4,7 @@ Tests für AgentMemory — analog zu Lenas pytest 6/6
 
 import sys
 import sqlite3
+import hashlib
 import pytest
 from types import MappingProxyType
 from pathlib import Path
@@ -97,6 +98,64 @@ def create_legacy_db_without_authority(db_path: Path):
         "INSERT INTO session_log (last_write) VALUES (?)",
         ("2026-01-01T12:00:00+00:00",)
     )
+    conn.commit()
+    conn.close()
+
+
+def create_legacy_lifecycle_db(db_path: Path):
+    """Simuliert altes Lessons/Entities-Schema ohne Lifecycle-Spalten."""
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE lessons (
+            id TEXT PRIMARY KEY,
+            action TEXT NOT NULL,
+            context TEXT NOT NULL,
+            outcome TEXT NOT NULL,
+            insight TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            applied_count INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO lessons (
+            id, action, context, outcome, insight, created_at, applied_count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "legacy-lesson",
+        "Legacy Action",
+        "legacy-context",
+        "positive",
+        "Legacy Insight",
+        "2026-01-01T12:00:00+00:00",
+        2,
+    ))
+    cursor.execute("""
+        CREATE TABLE entities (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            attributes TEXT,
+            first_seen TEXT NOT NULL,
+            last_updated TEXT NOT NULL,
+            fact_ids TEXT
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO entities (
+            id, name, entity_type, attributes, first_seen, last_updated, fact_ids
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "legacy-entity",
+        "Hermes",
+        "agent",
+        '{"role": "assistant"}',
+        "2026-01-01T12:00:00+00:00",
+        "2026-01-02T12:00:00+00:00",
+        '["fact-1"]',
+    ))
     conn.commit()
     conn.close()
 
@@ -449,6 +508,147 @@ def test_supersede_audit_includes_old_exists(mem):
     assert entry["metadata"]["old_exists"] is False
 
 
+# ==================== TEST 6b: Lessons/Entities Lifecycle ====================
+
+def test_migrates_legacy_lesson_entity_lifecycle_schema(tmp_path):
+    """Alte Lessons/Entities-Schemas bekommen Lifecycle-Spalten ohne Datenverlust."""
+    db_path = tmp_path / "legacy-lifecycle.db"
+    create_legacy_lifecycle_db(db_path)
+
+    migrated = AgentMemory(db_path=str(db_path))
+    lessons = migrated.get_lessons(context="legacy-context")
+    entity = migrated.get_entity("Hermes", "agent")
+
+    assert len(lessons) == 1
+    assert lessons[0].last_accessed is not None
+    assert lessons[0].expires_at is not None
+    assert lessons[0].applied_count == 2
+    assert entity is not None
+    assert entity.last_accessed is not None
+    assert entity.expires_at is not None
+    assert entity.attributes["role"] == "assistant"
+
+
+def test_apply_lesson_refreshes_lifecycle(frozen_mem):
+    """apply_lesson bumped applied_count und verlaengert last_accessed/expires_at."""
+    lesson_id = frozen_mem.learn(
+        "Action",
+        "context",
+        "positive",
+        "Insight"
+    )
+    frozen_mem.set_now(datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc))
+
+    frozen_mem.apply_lesson(lesson_id)
+    lesson = frozen_mem.get_lessons(context="context")[0]
+
+    assert lesson.applied_count == 1
+    assert lesson.last_accessed == datetime(
+        2026, 2, 1, 12, 0, tzinfo=timezone.utc
+    ).isoformat()
+    assert lesson.expires_at == datetime(
+        2026, 7, 31, 12, 0, tzinfo=timezone.utc
+    ).isoformat()
+
+
+def test_stale_lifecycle_removes_expired_lesson(mem):
+    """Expired Lessons werden vom Lifecycle-Cleanup entfernt."""
+    lesson_id = mem.learn("Old", "ctx", "neutral", "old insight")
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE lessons SET expires_at = ? WHERE id = ?",
+        ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), lesson_id)
+    )
+    conn.commit()
+
+    deleted = mem.forget_stale_lifecycle()
+
+    assert deleted["lessons"] == 1
+    assert mem.get_lessons(context="ctx") == []
+
+
+def test_active_lesson_survives_cleanup_after_apply(frozen_mem):
+    """Aktiv genutzte Lesson wird vor Cleanup wieder verlaengert."""
+    lesson_id = frozen_mem.learn("Keep", "ctx", "positive", "keep")
+    conn, should_close = frozen_mem._connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE lessons SET expires_at = ? WHERE id = ?",
+        ("2025-12-31T12:00:00+00:00", lesson_id)
+    )
+    conn.commit()
+
+    frozen_mem.apply_lesson(lesson_id)
+    deleted = frozen_mem.forget_stale_lifecycle()
+    lessons = frozen_mem.get_lessons(context="ctx")
+
+    if should_close:
+        conn.close()
+    assert deleted["lessons"] == 0
+    assert len(lessons) == 1
+
+
+def test_stale_lifecycle_removes_expired_entity(mem):
+    """Expired Entities werden vom Lifecycle-Cleanup entfernt."""
+    mem.track_entity("OldEntity", "system", {"state": "old"})
+    entity = mem.get_entity("OldEntity", "system")
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE entities SET expires_at = ? WHERE id = ?",
+        ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), entity.id)
+    )
+    conn.commit()
+
+    deleted = mem.forget_stale_lifecycle()
+
+    assert deleted["entities"] == 1
+    assert mem.get_entity("OldEntity", "system") is None
+
+
+def test_active_entity_survives_cleanup_after_update(frozen_mem):
+    """Aktive Entity wird durch Update/Access vor Cleanup verlaengert."""
+    frozen_mem.track_entity("Hermes", "agent", {"role": "assistant"})
+    entity = frozen_mem.get_entity("Hermes", "agent")
+    conn, should_close = frozen_mem._connect()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE entities SET expires_at = ? WHERE id = ?",
+        ("2025-12-31T12:00:00+00:00", entity.id)
+    )
+    conn.commit()
+
+    frozen_mem.update_entity("Hermes", "agent", {"memory": "sqlite"})
+    deleted = frozen_mem.forget_stale_lifecycle()
+    entity = frozen_mem.get_entity("Hermes", "agent")
+
+    if should_close:
+        conn.close()
+    assert deleted["entities"] == 0
+    assert entity is not None
+    assert entity.attributes["memory"] == "sqlite"
+
+
+def test_lifecycle_cleanup_audits_removed_counts(mem):
+    """Lifecycle-Cleanup schreibt Audit mit geloeschten Counts."""
+    lesson_id = mem.learn("Audit", "life", "neutral", "audit")
+    mem.track_entity("AuditEntity", "system", {})
+    entity = mem.get_entity("AuditEntity", "system")
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute("UPDATE lessons SET expires_at = ? WHERE id = ?", (past, lesson_id))
+    cursor.execute("UPDATE entities SET expires_at = ? WHERE id = ?", (past, entity.id))
+    conn.commit()
+
+    deleted = mem.forget_stale_lifecycle()
+    audit = mem.get_audit(op="forget_stale_lifecycle", limit=10)
+
+    assert deleted == {"lessons": 1, "entities": 1}
+    assert {e["metadata"]["type"] for e in audit} == {"lessons", "entities"}
+
+
 # ==================== TEST 7: Schema-Indexe und WAL ====================
 
 EXPECTED_INDEXES = {
@@ -756,7 +956,7 @@ def test_audit_includes_content_hash(mem):
     mem.remember("Hashbar", authority_class="evidence",
                  source="conversation", confidence=0.9)
     entries = mem.get_audit(op="write")
-    expected = __import__("hashlib").sha256(b"Hashbar").hexdigest()
+    expected = hashlib.sha256(b"Hashbar").hexdigest()
     assert entries[0]["content_hash"] == expected
 
 
