@@ -25,21 +25,25 @@ from dataclasses import dataclass, asdict
 _AUTHORITY_POLICY = {
     "identity": {
         "ttl_days": None,           # Nie löschen — Floor
+        "half_life_days": None,     # Kein Confidence-Decay — Identity ist Floor
         "min_confidence": 0.9,
         "allowed_sources": ("observation", "conversation"),
     },
     "preference": {
         "ttl_days": 14,
+        "half_life_days": 7,
         "min_confidence": 0.3,
         "allowed_sources": ("conversation", "observation"),
     },
     "evidence": {
         "ttl_days": 60,
+        "half_life_days": 30,
         "min_confidence": 0.5,
         "allowed_sources": ("conversation", "observation", "inference"),
     },
     "authorization": {
         "ttl_days": 90,
+        "half_life_days": 45,
         "min_confidence": 0.9,
         "allowed_sources": ("observation",),  # NICHT aus conversation
     },
@@ -512,6 +516,20 @@ class AgentMemory:
             return None
         return (self._utc_now() + timedelta(days=policy["ttl_days"])).isoformat()
 
+    def _effective_confidence(self, stored_confidence: float,
+                              last_accessed: str,
+                              authority_class: str) -> float:
+        policy = AUTHORITY_POLICY.get(authority_class, AUTHORITY_POLICY["evidence"])
+        half_life_days = policy.get("half_life_days")
+        if half_life_days is None:
+            return stored_confidence
+
+        age_days = max(
+            0.0,
+            (self._utc_now() - self._parse_time(last_accessed)).total_seconds() / 86400
+        )
+        return stored_confidence * (0.5 ** (age_days / half_life_days))
+
     def _expires_at_for_days(self, days: int) -> str:
         return (self._utc_now() + timedelta(days=days)).isoformat()
 
@@ -754,8 +772,7 @@ class AgentMemory:
                 sql += " AND f.authority_class = ?"
                 params.append(authority_class)
 
-            sql += " ORDER BY fts.rank LIMIT ?"
-            params.append(limit)
+            sql += " ORDER BY fts.rank"
 
             cursor.execute(sql, params)
             rows = cursor.fetchall()
@@ -765,7 +782,15 @@ class AgentMemory:
                 fact = self._row_to_fact(row)
                 if tags and not all(t in fact.tags for t in tags):
                     continue
+                if self._effective_confidence(
+                    fact.confidence,
+                    fact.last_accessed,
+                    fact.authority_class
+                ) < min_confidence:
+                    continue
                 facts.append(fact)
+                if len(facts) >= limit:
+                    break
             self._touch(conn, [fact.id for fact in facts])
 
             conn.commit()
@@ -788,7 +813,16 @@ class AgentMemory:
                 ORDER BY last_accessed DESC LIMIT ?
             """, (authority_class, self._now(), limit))
             rows = cursor.fetchall()
-            facts = [self._row_to_fact(r) for r in rows]
+            facts = []
+            for row in rows:
+                fact = self._row_to_fact(row)
+                if self._effective_confidence(
+                    fact.confidence,
+                    fact.last_accessed,
+                    fact.authority_class
+                ) <= 0:
+                    continue
+                facts.append(fact)
             self._touch(conn, [fact.id for fact in facts])
             conn.commit()
             return facts

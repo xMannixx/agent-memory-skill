@@ -1186,5 +1186,89 @@ def test_stats_empty_db_latency_is_safe(mem):
     assert stats["superseded_ratio"] == 0.0
 
 
+# ==================== TEST 13: Confidence Decay ====================
+
+def test_effective_confidence_decays_over_time(frozen_mem):
+    last_accessed = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc).isoformat()
+    frozen_mem.set_now(datetime(2026, 1, 8, 12, 0, tzinfo=timezone.utc))
+
+    effective = frozen_mem._effective_confidence(
+        0.8,
+        last_accessed,
+        "preference"
+    )
+
+    assert effective == pytest.approx(0.4)
+
+
+def test_identity_confidence_does_not_decay(frozen_mem):
+    last_accessed = datetime(2020, 1, 1, 12, 0, tzinfo=timezone.utc).isoformat()
+    frozen_mem.set_now(datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc))
+
+    effective = frozen_mem._effective_confidence(
+        0.95,
+        last_accessed,
+        "identity"
+    )
+
+    assert effective == 0.95
+
+
+def test_recall_filters_faded_facts(frozen_mem):
+    fact_id = frozen_mem.remember(
+        "Fading Memory",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    frozen_mem.set_now(datetime(2026, 2, 12, 12, 0, tzinfo=timezone.utc))
+
+    facts = frozen_mem.recall("Fading", min_confidence=0.3)
+
+    assert fact_id is not None
+    assert facts == []
+
+
+def test_recall_keeps_fresh_facts(frozen_mem):
+    fact_id = frozen_mem.remember(
+        "Fresh Memory",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+
+    facts = frozen_mem.recall("Fresh", min_confidence=0.3)
+
+    assert any(f.id == fact_id for f in facts)
+
+
+def test_decay_respects_min_confidence_limit(frozen_mem):
+    for i in range(5):
+        frozen_mem.remember(
+            f"Limit Decay Candidate {i}",
+            authority_class="evidence",
+            source="conversation",
+            confidence=0.9
+        )
+    conn, should_close = frozen_mem._connect()
+    cursor = conn.cursor()
+    old_access = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc).isoformat()
+    cursor.execute("""
+        UPDATE facts
+        SET last_accessed = ?
+        WHERE content LIKE 'Limit Decay Candidate 0%'
+        OR content LIKE 'Limit Decay Candidate 1%'
+    """, (old_access,))
+    conn.commit()
+    if should_close:
+        conn.close()
+
+    facts = frozen_mem.recall("Limit", limit=2, min_confidence=0.5)
+
+    assert len(facts) == 2
+    assert all("Candidate 0" not in f.content for f in facts)
+    assert all("Candidate 1" not in f.content for f in facts)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
