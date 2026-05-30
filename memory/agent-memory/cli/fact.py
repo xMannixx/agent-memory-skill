@@ -93,6 +93,23 @@ def main():
     consolidate_p.add_argument("--dry-run", action="store_true",
                                help="Nur Bericht erzeugen, keine DB-Aenderung")
 
+    # snippet
+    snippet_p = subparsers.add_parser(
+        "snippet",
+        help="Rohe Conversation-Snippets speichern oder suchen"
+    )
+    snippet_sub = snippet_p.add_subparsers(dest="snippet_command", required=True)
+
+    snippet_add_p = snippet_sub.add_parser("add", help="Snippet speichern")
+    snippet_add_p.add_argument("content", help="Rohes Snippet")
+    snippet_add_p.add_argument("--source", "-s", default="conversation")
+    snippet_add_p.add_argument("--session", help="Optionale Session-ID")
+
+    snippet_search_p = snippet_sub.add_parser("search", help="Snippets suchen")
+    snippet_search_p.add_argument("query")
+    snippet_search_p.add_argument("--limit", "-n", type=int, default=10)
+    snippet_search_p.add_argument("--session", help="Optionale Session-ID")
+
     args = parser.parse_args()
     mem = AgentMemory(db_path=args.db)
 
@@ -234,6 +251,29 @@ def main():
                 f"{len(group['old_ids'])} -> {new_id} "
                 f"conf={group['confidence']:.2f}"
             )
+
+    elif args.command == "snippet":
+        if args.snippet_command == "add":
+            snippet_id = mem.remember_snippet(
+                args.content,
+                source=args.source,
+                session_id=args.session,
+            )
+            print(f"OK [{snippet_id}] Snippet gespeichert")
+        elif args.snippet_command == "search":
+            snippets = mem.search_snippets(
+                args.query,
+                limit=args.limit,
+                session_id=args.session,
+            )
+            if not snippets:
+                print("Keine Snippets gefunden.")
+            for snippet in snippets:
+                session = f" session={snippet.session_id}" if snippet.session_id else ""
+                print(
+                    f"[{snippet.id}] ({snippet.source}{session}) "
+                    f"{snippet.content[:100]}"
+                )
 
 
 if __name__ == "__main__":

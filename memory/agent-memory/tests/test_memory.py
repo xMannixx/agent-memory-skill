@@ -1427,5 +1427,75 @@ def test_consolidate_audited(mem):
     ]) == 1
 
 
+def test_remember_and_search_snippet_roundtrip(mem):
+    snippet_id = mem.remember_snippet(
+        "Hermes discussed query-aware retrieval with Lena.",
+        source="conversation",
+        session_id="session-1",
+        metadata={"turn": 3},
+    )
+
+    snippets = mem.search_snippets("query-aware", session_id="session-1")
+
+    assert len(snippets) == 1
+    assert snippets[0].id == snippet_id
+    assert snippets[0].source == "conversation"
+    assert snippets[0].session_id == "session-1"
+    assert snippets[0].metadata == {"turn": 3}
+
+
+def test_search_snippets_filters_by_session(mem):
+    mem.remember_snippet("alpha retrieval detail", session_id="a")
+    mem.remember_snippet("alpha retrieval detail", session_id="b")
+
+    snippets = mem.search_snippets("alpha", session_id="b")
+
+    assert len(snippets) == 1
+    assert snippets[0].session_id == "b"
+
+
+def test_snippets_are_separate_from_facts(mem):
+    mem.remember_snippet("raw snippet only mentions nebula")
+    mem.remember(
+        "semantic fact only mentions comet",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+
+    assert mem.recall("nebula") == []
+    assert mem.search_snippets("comet") == []
+    assert len(mem.search_snippets("nebula")) == 1
+
+
+def test_forget_stale_snippets_removes_expired(frozen_mem):
+    frozen_mem.remember_snippet("temporary recall snippet")
+    assert len(frozen_mem.search_snippets("temporary")) == 1
+
+    frozen_mem.set_now(
+        datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc)
+    )
+    removed = frozen_mem.forget_stale_snippets()
+
+    assert removed == 1
+    assert frozen_mem.search_snippets("temporary") == []
+
+
+def test_snippet_writes_and_cleanup_are_audited(frozen_mem):
+    frozen_mem.remember_snippet("audited recall snippet", session_id="audit")
+    frozen_mem.set_now(
+        datetime(2026, 2, 15, 12, 0, tzinfo=timezone.utc)
+    )
+    frozen_mem.forget_stale_snippets()
+
+    writes = frozen_mem.get_audit(op="snippet_write", limit=5)
+    cleanups = frozen_mem.get_audit(op="forget_stale_snippets", limit=5)
+
+    assert writes
+    assert writes[0]["metadata"] == {"session_id": "audit"}
+    assert cleanups
+    assert cleanups[0]["metadata"] == {"removed": 1}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

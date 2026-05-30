@@ -60,6 +60,7 @@ ANOMALY_WINDOW_SECONDS = 60
 
 LESSON_TTL_DAYS = 180
 ENTITY_TTL_DAYS = 365
+RECALL_TTL_DAYS = 30
 STATS_LATENCY_WINDOW = 200
 
 
@@ -105,6 +106,17 @@ class Entity:
     last_accessed: str
     expires_at: Optional[str]
     fact_ids: List[str]
+
+
+@dataclass
+class Snippet:
+    id: str
+    content: str
+    source: str
+    session_id: Optional[str]
+    created_at: str
+    expires_at: Optional[str]
+    metadata: Dict[str, Any]
 
 
 class AgentMemory:
@@ -245,9 +257,28 @@ class AgentMemory:
             )
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recall_snippets (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                source TEXT DEFAULT 'conversation',
+                session_id TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                metadata TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS recall_snippets_fts
+            USING fts5(content, tokenize='porter')
+        """)
+
         self._migrate_session_log(cursor)
         self._cleanup_fts_orphans(cursor)
+        self._cleanup_snippet_fts_orphans(cursor)
         self._create_fts_triggers(cursor)
+        self._create_snippet_fts_triggers(cursor)
         self._create_indexes(cursor)
         self._enable_wal_if_file_db(cursor)
 
@@ -275,6 +306,10 @@ class AgentMemory:
                 ON memory_audit(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_op
                 ON memory_audit(op);
+            CREATE INDEX IF NOT EXISTS idx_recall_snippets_session_time
+                ON recall_snippets(session_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_recall_snippets_expires
+                ON recall_snippets(expires_at);
         """)
 
     def _enable_wal_if_file_db(self, cursor):
@@ -344,6 +379,12 @@ class AgentMemory:
             WHERE rowid NOT IN (SELECT rowid FROM facts)
         """)
 
+    def _cleanup_snippet_fts_orphans(self, cursor):
+        cursor.execute("""
+            DELETE FROM recall_snippets_fts
+            WHERE rowid NOT IN (SELECT rowid FROM recall_snippets)
+        """)
+
     def _create_fts_triggers(self, cursor):
         cursor.executescript("""
             CREATE TRIGGER IF NOT EXISTS facts_ai AFTER INSERT ON facts BEGIN
@@ -359,6 +400,27 @@ class AgentMemory:
                 DELETE FROM facts_fts WHERE rowid = old.rowid;
                 INSERT INTO facts_fts(rowid, content, tags)
                 VALUES (new.rowid, new.content, new.tags);
+            END;
+        """)
+
+    def _create_snippet_fts_triggers(self, cursor):
+        cursor.executescript("""
+            CREATE TRIGGER IF NOT EXISTS recall_snippets_ai
+            AFTER INSERT ON recall_snippets BEGIN
+                INSERT INTO recall_snippets_fts(rowid, content)
+                VALUES (new.rowid, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS recall_snippets_ad
+            AFTER DELETE ON recall_snippets BEGIN
+                DELETE FROM recall_snippets_fts WHERE rowid = old.rowid;
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS recall_snippets_au
+            AFTER UPDATE ON recall_snippets BEGIN
+                DELETE FROM recall_snippets_fts WHERE rowid = old.rowid;
+                INSERT INTO recall_snippets_fts(rowid, content)
+                VALUES (new.rowid, new.content);
             END;
         """)
 
@@ -499,6 +561,10 @@ class AgentMemory:
             .replace("_", "\\_")
         )
 
+    def _quote_fts_query(self, query: str) -> str:
+        """Treat user input as a literal FTS phrase, not FTS query syntax."""
+        return f'"{query.replace(chr(34), chr(34) * 2)}"'
+
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
 
@@ -591,6 +657,14 @@ class AgentMemory:
             "last_accessed, expires_at, fact_ids"
         )
 
+    def _snippet_select_columns(self, alias: str = None) -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            f"{prefix}id, {prefix}content, {prefix}source, "
+            f"{prefix}session_id, {prefix}created_at, "
+            f"{prefix}expires_at, {prefix}metadata"
+        )
+
     def _row_to_lesson(self, row) -> Lesson:
         return Lesson(
             id=row[0], action=row[1], context=row[2],
@@ -606,6 +680,17 @@ class AgentMemory:
             first_seen=row[4], last_updated=row[5],
             last_accessed=row[6], expires_at=row[7],
             fact_ids=json.loads(row[8] or "[]")
+        )
+
+    def _row_to_snippet(self, row) -> Snippet:
+        return Snippet(
+            id=row[0],
+            content=row[1],
+            source=row[2],
+            session_id=row[3],
+            created_at=row[4],
+            expires_at=row[5],
+            metadata=json.loads(row[6] or "{}"),
         )
 
     def _touch_lesson_ids(self, conn, lesson_ids: List[str]):
@@ -1038,6 +1123,100 @@ class AgentMemory:
         if should_close:
             conn.close()
         return deleted
+
+    # ==================== RECALL SNIPPETS ====================
+
+    def remember_snippet(self, content: str, source: str = "conversation",
+                         session_id: Optional[str] = None,
+                         metadata: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Speichert rohen Conversation-Recall getrennt von semantic facts.
+
+        Snippets werden nicht automatisch injiziert; sie sind nur ueber
+        search_snippets() abrufbar.
+        """
+        metadata = metadata or {}
+        snippet_id = self._generate_id(
+            f"{session_id or ''}:{content}",
+            authority_class="recall_snippet",
+        )
+        now = self._now()
+        expires_at = self._expires_at_for_days(RECALL_TTL_DAYS)
+
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO recall_snippets (
+                id, content, source, session_id, created_at, expires_at, metadata
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            snippet_id,
+            content,
+            source,
+            session_id,
+            now,
+            expires_at,
+            json.dumps(metadata),
+        ))
+        self._audit(
+            "snippet_write",
+            fact_id=snippet_id,
+            content=content,
+            source=source,
+            metadata={"session_id": session_id},
+            conn=conn,
+        )
+        conn.commit()
+        if should_close:
+            conn.close()
+
+        self._log_write()
+        return snippet_id
+
+    def search_snippets(self, query: str, limit: int = 10,
+                        session_id: Optional[str] = None) -> List[Snippet]:
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        sql = f"""
+            SELECT {self._snippet_select_columns("s")}
+            FROM recall_snippets s
+            JOIN recall_snippets_fts fts ON s.rowid = fts.rowid
+            WHERE recall_snippets_fts MATCH ?
+            AND (s.expires_at IS NULL OR s.expires_at > ?)
+        """
+        params: List[Any] = [self._quote_fts_query(query), self._now()]
+        if session_id:
+            sql += " AND s.session_id = ?"
+            params.append(session_id)
+        sql += " ORDER BY fts.rank LIMIT ?"
+        params.append(limit)
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        if should_close:
+            conn.close()
+        return [self._row_to_snippet(row) for row in rows]
+
+    def forget_stale_snippets(self) -> int:
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM recall_snippets
+            WHERE expires_at IS NOT NULL
+            AND expires_at < ?
+        """, (self._now(),))
+        removed = cursor.rowcount
+        if removed:
+            self._audit(
+                "forget_stale_snippets",
+                metadata={"removed": removed},
+                conn=conn,
+            )
+        conn.commit()
+        if should_close:
+            conn.close()
+        return removed
 
     # ==================== LESSONS ====================
 
@@ -1509,6 +1688,9 @@ class AgentMemory:
             for r in cursor.fetchall()
         ]
 
+        cursor.execute(f"SELECT {self._snippet_select_columns()} FROM recall_snippets")
+        snippets = [asdict(self._row_to_snippet(r)) for r in cursor.fetchall()]
+
         if should_close:
             conn.close()
 
@@ -1517,6 +1699,7 @@ class AgentMemory:
             "facts": facts,
             "lessons": lessons,
             "entities": entities,
+            "recall_snippets": snippets,
         }
 
 
