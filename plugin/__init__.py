@@ -13,6 +13,7 @@ via pre_llm_call Hook — kein manuelles Laden nötig.
 from __future__ import annotations
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -33,6 +34,23 @@ DEFAULT_BUDGETS = {
     "preference": {"limit": 5, "max_chars": 1600},
     "evidence": {"limit": 10, "max_chars": 3000},
     "lessons": {"limit": 3, "max_chars": 1200},
+}
+
+_QUERY_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "for",
+    "how",
+    "is",
+    "of",
+    "or",
+    "should",
+    "the",
+    "to",
+    "what",
+    "with",
 }
 
 
@@ -81,6 +99,60 @@ def _section(title: str, lines: Iterable[str], max_chars: int) -> Optional[str]:
     return title + "\n" + "\n".join(clipped)
 
 
+def _first_text_value(values: Iterable[Any]) -> Optional[str]:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            content = value.get("content") or value.get("text")
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    return None
+
+
+def _extract_user_message(kwargs: Dict[str, Any]) -> Optional[str]:
+    direct = _first_text_value(
+        kwargs.get(key) for key in ("user_message", "message", "prompt")
+    )
+    if direct:
+        return direct
+
+    messages = kwargs.get("messages")
+    if isinstance(messages, list):
+        user_messages = [
+            message for message in messages
+            if isinstance(message, dict) and message.get("role") == "user"
+        ]
+        return _first_text_value(reversed(user_messages))
+    return None
+
+
+def _query_terms(text: str) -> List[str]:
+    return [
+        term.lower()
+        for term in re.findall(r"\w+", text)
+        if len(term) >= 3 and term.lower() not in _QUERY_STOPWORDS
+    ]
+
+
+def _term_key(term: str) -> str:
+    return term[:5]
+
+
+def _filter_relevant_facts(facts: Iterable[Any], query: str) -> List[Any]:
+    query_keys = {_term_key(term) for term in _query_terms(query)}
+    if not query_keys:
+        return list(facts)
+
+    relevant = []
+    for fact in facts:
+        content_keys = {_term_key(term) for term in _query_terms(fact.content)}
+        overlap = query_keys & content_keys
+        if len(overlap) >= min(2, len(query_keys)):
+            relevant.append(fact)
+    return relevant
+
+
 def build_memory_context(
     mem: Any,
     *,
@@ -89,7 +161,7 @@ def build_memory_context(
     budgets: Dict[str, Dict[str, int]] = DEFAULT_BUDGETS,
 ) -> Optional[str]:
     """Build bounded prompt context. Authorization facts are never injected."""
-    if not is_first_turn:
+    if not is_first_turn and not user_message:
         return None
 
     parts = []
@@ -107,36 +179,53 @@ def build_memory_context(
         if section:
             parts.append(section)
 
-    # preference — letzte 5
-    pref_budget = _budget_for("preference", budgets)
-    pref_facts = mem.recall_by_authority("preference", limit=pref_budget["limit"])
-    if pref_facts:
-        lines = [f"- {f.content}" for f in pref_facts]
-        section = _section("## Präferenzen", lines, pref_budget["max_chars"])
-        if section:
-            parts.append(section)
-
-    # evidence — letzte 10 zugegriffene
     evidence_budget = _budget_for("evidence", budgets)
-    evidence_facts = mem.recall_by_authority("evidence", limit=evidence_budget["limit"])
+    if is_first_turn:
+        # preference — letzte 5
+        pref_budget = _budget_for("preference", budgets)
+        pref_facts = mem.recall_by_authority("preference", limit=pref_budget["limit"])
+        if pref_facts:
+            lines = [f"- {f.content}" for f in pref_facts]
+            section = _section("## Präferenzen", lines, pref_budget["max_chars"])
+            if section:
+                parts.append(section)
+
+        # evidence — letzte 10 zugegriffene
+        evidence_facts = mem.recall_by_authority(
+            "evidence",
+            limit=evidence_budget["limit"],
+        )
+    else:
+        candidate_limit = max(evidence_budget["limit"] * 3, evidence_budget["limit"])
+        evidence_facts = mem.recall(
+            user_message,
+            limit=candidate_limit,
+            authority_class="evidence",
+        )
+        evidence_facts = _filter_relevant_facts(
+            evidence_facts,
+            user_message,
+        )[:evidence_budget["limit"]]
+
     if evidence_facts:
         lines = [f"- {f.content}" for f in evidence_facts]
         section = _section("## Kontext", lines, evidence_budget["max_chars"])
         if section:
             parts.append(section)
 
-    # Lektionen — letzte 3 negative
-    lessons_budget = _budget_for("lessons", budgets)
-    lessons = mem.get_lessons(outcome="negative", limit=lessons_budget["limit"])
-    if lessons:
-        lines = [f"- {l.insight}" for l in lessons]
-        section = _section(
-            "## Lektionen (nicht wiederholen)",
-            lines,
-            lessons_budget["max_chars"],
-        )
-        if section:
-            parts.append(section)
+    if is_first_turn:
+        # Lektionen — letzte 3 negative
+        lessons_budget = _budget_for("lessons", budgets)
+        lessons = mem.get_lessons(outcome="negative", limit=lessons_budget["limit"])
+        if lessons:
+            lines = [f"- {l.insight}" for l in lessons]
+            section = _section(
+                "## Lektionen (nicht wiederholen)",
+                lines,
+                lessons_budget["max_chars"],
+            )
+            if section:
+                parts.append(section)
 
     if not parts:
         return None
@@ -144,7 +233,7 @@ def build_memory_context(
     return "# AgentMemory\n\n" + "\n\n".join(parts)
 
 
-def _inject_memory(*, is_first_turn: bool = False, **_):
+def _inject_memory(*, is_first_turn: bool = False, **kwargs):
     """
     Wird vor jedem LLM-Call aufgerufen.
     Injiziert Memory-Kontext nur beim ersten Turn einer Session
@@ -154,7 +243,11 @@ def _inject_memory(*, is_first_turn: bool = False, **_):
     if not mem:
         return None
 
-    context = build_memory_context(mem, is_first_turn=is_first_turn)
+    context = build_memory_context(
+        mem,
+        is_first_turn=is_first_turn,
+        user_message=_extract_user_message(kwargs),
+    )
     if not context:
         return None
     return {"context": context}

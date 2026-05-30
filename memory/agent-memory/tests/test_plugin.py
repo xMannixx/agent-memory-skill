@@ -13,7 +13,7 @@ if str(MEMORY_SRC) not in sys.path:
     sys.path.insert(0, str(MEMORY_SRC))
 
 from memory import AgentMemory
-from plugin import build_memory_context
+from plugin import _extract_user_message, build_memory_context
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def test_plugin_never_injects_authorization_lane(mem):
     assert context is None or "production deploys" not in context
 
 
-def test_plugin_returns_none_after_first_turn_for_budget_batch(mem):
+def test_plugin_returns_none_after_first_turn_without_query(mem):
     mem.remember(
         "Perry is the operator",
         authority_class="identity",
@@ -123,3 +123,92 @@ def test_plugin_returns_none_after_first_turn_for_budget_batch(mem):
     )
 
     assert build_memory_context(mem, is_first_turn=False) is None
+
+
+def test_plugin_later_turn_retrieves_relevant_evidence(mem):
+    mem.remember(
+        "Hermes should use query-aware retrieval for later turns",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    mem.remember(
+        "Unrelated memory about database snapshots",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="How should later turns retrieve memory?",
+    )
+
+    assert context is not None
+    assert "query-aware retrieval" in context
+    assert "database snapshots" not in context
+    assert "## Präferenzen" not in context
+    assert "## Lektionen" not in context
+
+
+def test_plugin_later_turn_keeps_identity_floor(mem):
+    mem.remember(
+        "Perry is the operator",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="unknown topic",
+    )
+
+    assert context is not None
+    assert "Perry is the operator" in context
+
+
+def test_plugin_later_turn_budget_bounds_retrieved_evidence(mem):
+    mem.remember(
+        "alpha retrieval first relevant memory",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    mem.remember(
+        "alpha retrieval second relevant memory",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="alpha retrieval",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 10, "max_chars": 39},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert context.count("- ") == 1
+
+
+def test_extract_user_message_accepts_common_hook_shapes():
+    assert _extract_user_message({"user_message": "hello"}) == "hello"
+    assert _extract_user_message({"message": {"content": "from dict"}}) == "from dict"
+    assert _extract_user_message({"prompt": "from prompt"}) == "from prompt"
+    assert _extract_user_message({
+        "messages": [
+            {"role": "system", "content": "ignore"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "latest"},
+        ]
+    }) == "latest"

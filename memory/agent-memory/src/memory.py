@@ -11,6 +11,7 @@ MIT License
 import sqlite3
 import json
 import hashlib
+import re
 import tempfile
 import time
 from types import MappingProxyType
@@ -565,6 +566,13 @@ class AgentMemory:
         """Treat user input as a literal FTS phrase, not FTS query syntax."""
         return f'"{query.replace(chr(34), chr(34) * 2)}"'
 
+    def _terms_fts_query(self, query: str) -> str:
+        """Turn natural language into a safe OR query for FTS5."""
+        terms = re.findall(r"\w+", query)
+        if not terms:
+            return self._quote_fts_query(query)
+        return " OR ".join(self._quote_fts_query(term) for term in terms)
+
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
 
@@ -851,7 +859,7 @@ class AgentMemory:
                 AND (f.expires_at IS NULL OR f.expires_at > ?)
                 AND f.superseded_by IS NULL
             """
-            params = [query, min_confidence, self._now()]
+            params = [self._terms_fts_query(query), min_confidence, self._now()]
 
             if authority_class:
                 sql += " AND f.authority_class = ?"
