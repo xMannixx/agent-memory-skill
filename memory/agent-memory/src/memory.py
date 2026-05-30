@@ -449,6 +449,15 @@ class AgentMemory:
             superseded_by=row[10]
         )
 
+    def _fact_select_columns(self, alias: str = None) -> str:
+        prefix = f"{alias}." if alias else ""
+        return (
+            f"{prefix}id, {prefix}content, {prefix}tags, {prefix}source, "
+            f"{prefix}confidence, {prefix}authority_class, {prefix}created_at, "
+            f"{prefix}last_accessed, {prefix}access_count, {prefix}expires_at, "
+            f"{prefix}superseded_by"
+        )
+
     # ==================== FACTS ====================
 
     def remember(self, content: str, tags: List[str] = None,
@@ -574,8 +583,8 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
-        sql = """
-            SELECT f.* FROM facts f
+        sql = f"""
+            SELECT {self._fact_select_columns("f")} FROM facts f
             JOIN facts_fts fts ON f.rowid = fts.rowid
             WHERE facts_fts MATCH ?
             AND f.confidence >= ?
@@ -610,8 +619,8 @@ class AgentMemory:
     def recall_by_authority(self, authority_class: str, limit: int = 50) -> List[Fact]:
         conn, should_close = self._connect()
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT * FROM facts
+        cursor.execute(f"""
+            SELECT {self._fact_select_columns()} FROM facts
             WHERE authority_class = ?
             AND superseded_by IS NULL
             AND (expires_at IS NULL OR expires_at > ?)
@@ -628,11 +637,17 @@ class AgentMemory:
     def get_fact(self, fact_id: str) -> Optional[Fact]:
         conn, should_close = self._connect()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))
+        cursor.execute(
+            f"SELECT {self._fact_select_columns()} FROM facts WHERE id = ?",
+            (fact_id,)
+        )
         row = cursor.fetchone()
         if row:
             self._touch(conn, [fact_id])
-            cursor.execute("SELECT * FROM facts WHERE id = ?", (fact_id,))
+            cursor.execute(
+                f"SELECT {self._fact_select_columns()} FROM facts WHERE id = ?",
+                (fact_id,)
+            )
             row = cursor.fetchone()
             conn.commit()
         if should_close:
@@ -645,7 +660,7 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
-        sql = "SELECT * FROM facts WHERE 1=1"
+        sql = f"SELECT {self._fact_select_columns()} FROM facts WHERE 1=1"
         params = []
 
         if not include_superseded:
@@ -1094,7 +1109,7 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
-        cursor.execute("SELECT * FROM facts")
+        cursor.execute(f"SELECT {self._fact_select_columns()} FROM facts")
         facts = [self._row_to_fact(r).to_dict() for r in cursor.fetchall()]
 
         cursor.execute("SELECT * FROM lessons")

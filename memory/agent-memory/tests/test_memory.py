@@ -29,6 +29,77 @@ def file_mem(tmp_path):
     return AgentMemory(db_path=str(tmp_path / "memory.db"))
 
 
+class FrozenAgentMemory(AgentMemory):
+    def __init__(self, db_path: str, frozen_now: datetime):
+        self._frozen_now = frozen_now
+        super().__init__(db_path=db_path)
+
+    def _utc_now(self) -> datetime:
+        return self._frozen_now
+
+    def set_now(self, frozen_now: datetime):
+        self._frozen_now = frozen_now
+
+
+@pytest.fixture
+def frozen_mem(tmp_path):
+    """File-backed DB mit kontrollierbarer Uhr fuer TTL/Rebound-Tests."""
+    return FrozenAgentMemory(
+        db_path=str(tmp_path / "frozen.db"),
+        frozen_now=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
+
+
+def create_legacy_db_without_authority(db_path: Path):
+    """Simuliert ein altes Schema vor authority_class und memory_meta."""
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE facts (
+            id TEXT PRIMARY KEY,
+            content TEXT NOT NULL,
+            tags TEXT,
+            source TEXT DEFAULT 'conversation',
+            confidence REAL DEFAULT 1.0,
+            created_at TEXT NOT NULL,
+            last_accessed TEXT NOT NULL,
+            access_count INTEGER DEFAULT 1,
+            expires_at TEXT,
+            superseded_by TEXT
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO facts (
+            id, content, tags, source, confidence, created_at,
+            last_accessed, access_count, expires_at, superseded_by
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        "legacy-1",
+        "Legacy Fact",
+        '["legacy"]',
+        "conversation",
+        0.9,
+        "2026-01-01T12:00:00+00:00",
+        "2026-01-01T12:00:00+00:00",
+        1,
+        None,
+        None,
+    ))
+    cursor.execute("""
+        CREATE TABLE session_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            last_write TEXT
+        )
+    """)
+    cursor.execute(
+        "INSERT INTO session_log (last_write) VALUES (?)",
+        ("2026-01-01T12:00:00+00:00",)
+    )
+    conn.commit()
+    conn.close()
+
+
 # ==================== TEST 1: Basis remember/recall ====================
 
 def test_remember_and_recall(mem):
@@ -323,6 +394,122 @@ def test_memory_db_does_not_use_wal(mem):
     cursor.execute("PRAGMA journal_mode")
     mode = cursor.fetchone()[0].lower()
     assert mode != "wal"
+
+
+# ==================== TEST 7b: Test-Infrastruktur und Migrationen ====================
+
+@pytest.mark.parametrize(
+    "authority_class,source,confidence,expected",
+    [
+        ("identity", "observation", 1.0, True),
+        ("identity", "conversation", 0.95, True),
+        ("identity", "inference", 1.0, False),
+        ("preference", "conversation", 0.3, True),
+        ("preference", "conversation", 0.29, False),
+        ("evidence", "inference", 0.5, True),
+        ("evidence", "conversation", 0.49, False),
+        ("authorization", "observation", 0.9, True),
+        ("authorization", "conversation", 1.0, False),
+    ],
+)
+def test_authority_policy_accept_reject_matrix(
+    mem, authority_class, source, confidence, expected
+):
+    """Policy-Matrix prueft erlaubte Quellen und Confidence-Grenzen."""
+    result = mem.remember(
+        f"Policy Matrix {authority_class} {source} {confidence}",
+        authority_class=authority_class,
+        source=source,
+        confidence=confidence
+    )
+    assert (result is not None) is expected
+
+
+def test_file_backed_db_persists_across_instances(tmp_path):
+    """File-backed Daten bleiben ueber neue AgentMemory-Instanzen erhalten."""
+    db_path = tmp_path / "persistent.db"
+    first = AgentMemory(db_path=str(db_path))
+    fact_id = first.remember(
+        "Persistiert ueber Instanzen",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0
+    )
+
+    second = AgentMemory(db_path=str(db_path))
+    fact = second.get_fact(fact_id)
+
+    assert fact is not None
+    assert fact.content == "Persistiert ueber Instanzen"
+
+
+def test_frozen_time_controls_fact_ttl(frozen_mem):
+    """FrozenAgentMemory erlaubt TTL-Tests ohne manuelles SQL-Patching."""
+    fact_id = frozen_mem.remember(
+        "Zeitgesteuerter Fact",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    fact = frozen_mem.get_fact(fact_id)
+
+    assert fact.expires_at == datetime(
+        2026, 1, 15, 12, 0, tzinfo=timezone.utc
+    ).isoformat()
+
+
+def test_frozen_time_controls_rebound_detection(tmp_path):
+    """Rebound kann ueber kontrollierte Zeit und memory_meta getestet werden."""
+    db_path = tmp_path / "rebound.db"
+    first = FrozenAgentMemory(
+        db_path=str(db_path),
+        frozen_now=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+    )
+    first.remember(
+        "Baseline",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    second = FrozenAgentMemory(
+        db_path=str(db_path),
+        frozen_now=datetime(2026, 1, 1, 19, 1, tzinfo=timezone.utc),
+    )
+
+    assert second._rebound_active is True
+
+
+def test_migrates_legacy_fact_schema_without_losing_rows(tmp_path):
+    """Alte DB ohne authority_class wird migriert und bleibt lesbar."""
+    db_path = tmp_path / "legacy.db"
+    create_legacy_db_without_authority(db_path)
+
+    migrated = AgentMemory(db_path=str(db_path))
+    fact = migrated.get_fact("legacy-1")
+
+    assert fact is not None
+    assert fact.content == "Legacy Fact"
+    assert fact.authority_class == "evidence"
+
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(facts)")
+    columns = [row[1] for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT value FROM memory_meta WHERE key = 'last_write'"
+    )
+    last_write = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT COUNT(*) FROM sqlite_master
+        WHERE type = 'table' AND name = 'session_log'
+    """)
+    session_log_count = cursor.fetchone()[0]
+    conn.close()
+
+    assert "authority_class" in columns
+    assert last_write == "2026-01-01T12:00:00+00:00"
+    assert session_log_count == 0
 
 
 # ==================== TEST 8: Idempotente remember() ====================
