@@ -12,6 +12,7 @@ import sqlite3
 import json
 import hashlib
 import tempfile
+import time
 from types import MappingProxyType
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
@@ -55,6 +56,7 @@ ANOMALY_WINDOW_SECONDS = 60
 
 LESSON_TTL_DAYS = 180
 ENTITY_TTL_DAYS = 365
+STATS_LATENCY_WINDOW = 200
 
 
 @dataclass
@@ -126,6 +128,8 @@ class AgentMemory:
 
         self.db_path = db_path
         self._session_write_count = 0
+        self._recall_count = 0
+        self._recall_latency_ms: List[float] = []
         self._rebound_write_count = 0
         self._session_start = self._utc_now()
         self._rebound_active = False
@@ -447,6 +451,36 @@ class AgentMemory:
                 },
             )
 
+    def _record_recall(self, elapsed_ms: float):
+        self._recall_count += 1
+        self._recall_latency_ms.append(elapsed_ms)
+        if len(self._recall_latency_ms) > STATS_LATENCY_WINDOW:
+            self._recall_latency_ms = self._recall_latency_ms[-STATS_LATENCY_WINDOW:]
+
+    def _recall_latency_stats(self) -> Dict[str, Any]:
+        samples = sorted(self._recall_latency_ms)
+        count = len(samples)
+        if not samples:
+            return {
+                "count": 0,
+                "avg": None,
+                "p50": None,
+                "p95": None,
+                "max": None,
+            }
+
+        def percentile(value: float) -> float:
+            index = min(count - 1, int((count - 1) * value))
+            return samples[index]
+
+        return {
+            "count": count,
+            "avg": sum(samples) / count,
+            "p50": percentile(0.50),
+            "p95": percentile(0.95),
+            "max": samples[-1],
+        }
+
     def _generate_id(self, content: str, authority_class: str = "evidence") -> str:
         """Deterministische Content-Hash-ID. Gleicher Text in gleicher Lane = gleicher Fakt."""
         normalized = content.strip()
@@ -702,59 +736,66 @@ class AgentMemory:
     def recall(self, query: str, limit: int = 10,
                tags: List[str] = None, min_confidence: float = 0.3,
                authority_class: str = None) -> List[Fact]:
+        started_at = time.perf_counter()
         conn, should_close = self._connect()
         cursor = conn.cursor()
+        try:
+            sql = f"""
+                SELECT {self._fact_select_columns("f")} FROM facts f
+                JOIN facts_fts fts ON f.rowid = fts.rowid
+                WHERE facts_fts MATCH ?
+                AND f.confidence >= ?
+                AND (f.expires_at IS NULL OR f.expires_at > ?)
+                AND f.superseded_by IS NULL
+            """
+            params = [query, min_confidence, self._now()]
 
-        sql = f"""
-            SELECT {self._fact_select_columns("f")} FROM facts f
-            JOIN facts_fts fts ON f.rowid = fts.rowid
-            WHERE facts_fts MATCH ?
-            AND f.confidence >= ?
-            AND (f.expires_at IS NULL OR f.expires_at > ?)
-            AND f.superseded_by IS NULL
-        """
-        params = [query, min_confidence, self._now()]
+            if authority_class:
+                sql += " AND f.authority_class = ?"
+                params.append(authority_class)
 
-        if authority_class:
-            sql += " AND f.authority_class = ?"
-            params.append(authority_class)
+            sql += " ORDER BY fts.rank LIMIT ?"
+            params.append(limit)
 
-        sql += " ORDER BY fts.rank LIMIT ?"
-        params.append(limit)
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+            facts = []
 
-        cursor.execute(sql, params)
-        rows = cursor.fetchall()
-        facts = []
+            for row in rows:
+                fact = self._row_to_fact(row)
+                if tags and not all(t in fact.tags for t in tags):
+                    continue
+                facts.append(fact)
+            self._touch(conn, [fact.id for fact in facts])
 
-        for row in rows:
-            fact = self._row_to_fact(row)
-            if tags and not all(t in fact.tags for t in tags):
-                continue
-            facts.append(fact)
-        self._touch(conn, [fact.id for fact in facts])
-
-        conn.commit()
-        if should_close:
-            conn.close()
-        return facts
+            conn.commit()
+            return facts
+        finally:
+            if should_close:
+                conn.close()
+            self._record_recall((time.perf_counter() - started_at) * 1000)
 
     def recall_by_authority(self, authority_class: str, limit: int = 50) -> List[Fact]:
+        started_at = time.perf_counter()
         conn, should_close = self._connect()
         cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT {self._fact_select_columns()} FROM facts
-            WHERE authority_class = ?
-            AND superseded_by IS NULL
-            AND (expires_at IS NULL OR expires_at > ?)
-            ORDER BY last_accessed DESC LIMIT ?
-        """, (authority_class, self._now(), limit))
-        rows = cursor.fetchall()
-        facts = [self._row_to_fact(r) for r in rows]
-        self._touch(conn, [fact.id for fact in facts])
-        conn.commit()
-        if should_close:
-            conn.close()
-        return facts
+        try:
+            cursor.execute(f"""
+                SELECT {self._fact_select_columns()} FROM facts
+                WHERE authority_class = ?
+                AND superseded_by IS NULL
+                AND (expires_at IS NULL OR expires_at > ?)
+                ORDER BY last_accessed DESC LIMIT ?
+            """, (authority_class, self._now(), limit))
+            rows = cursor.fetchall()
+            facts = [self._row_to_fact(r) for r in rows]
+            self._touch(conn, [fact.id for fact in facts])
+            conn.commit()
+            return facts
+        finally:
+            if should_close:
+                conn.close()
+            self._record_recall((time.perf_counter() - started_at) * 1000)
 
     def get_fact(self, fact_id: str) -> Optional[Fact]:
         conn, should_close = self._connect()
@@ -1163,16 +1204,35 @@ class AgentMemory:
         """)
         by_class = {row[0]: row[1] for row in cursor.fetchall()}
 
+        cursor.execute("""
+            SELECT COUNT(*) FROM facts
+            WHERE expires_at IS NOT NULL
+            AND expires_at < ?
+            AND superseded_by IS NULL
+        """, (self._now(),))
+        stale_facts = cursor.fetchone()[0]
+
         if should_close:
             conn.close()
+
+        total_facts = active + superseded
+        by_class_ratio = {
+            cls: count / active for cls, count in by_class.items()
+        } if active else {}
 
         return {
             "active_facts": active,
             "superseded_facts": superseded,
-            "total_facts": active + superseded,
+            "total_facts": total_facts,
             "by_class": by_class,
+            "by_class_ratio": by_class_ratio,
             "lessons": lessons,
             "entities": entities,
+            "stale_facts": stale_facts,
+            "stale_ratio": stale_facts / active if active else 0.0,
+            "superseded_ratio": superseded / total_facts if total_facts else 0.0,
+            "recalls": self._recall_count,
+            "recall_latency_ms": self._recall_latency_stats(),
             "rebound_active": self._rebound_active,
             "session_writes": self._session_write_count,
             "rebound_remaining": max(

@@ -16,6 +16,7 @@ from memory import (
     AUTHORITY_POLICY,
     REBOUND_MAX_FACTS_AFTER_IDLE,
     ANOMALY_WRITES_PER_MINUTE,
+    STATS_LATENCY_WINDOW,
 )
 
 
@@ -1052,6 +1053,137 @@ def test_anomaly_does_not_block_writes(mem):
         )
     assert last_id is not None
     assert mem.get_fact(last_id) is not None
+
+
+# ==================== TEST 12: Observability Stats ====================
+
+def test_stats_tracks_recall_count(mem):
+    mem.remember(
+        "Recall Count Test",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    mem.recall("Recall")
+    mem.recall("Count")
+    mem.recall_by_authority("evidence")
+
+    assert mem.stats()["recalls"] == 3
+
+
+def test_stats_records_recall_latency(mem):
+    mem.remember(
+        "Latency Test",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    mem.recall("Latency")
+    latency = mem.stats()["recall_latency_ms"]
+
+    assert latency["count"] == 1
+    assert latency["avg"] >= 0
+    assert latency["p50"] >= 0
+    assert latency["p95"] >= 0
+    assert latency["max"] >= 0
+
+
+def test_stats_latency_window_is_bounded(mem):
+    for i in range(STATS_LATENCY_WINDOW + 5):
+        mem._record_recall(float(i))
+
+    latency = mem.stats()["recall_latency_ms"]
+
+    assert mem.stats()["recalls"] == STATS_LATENCY_WINDOW + 5
+    assert latency["count"] == STATS_LATENCY_WINDOW
+    assert mem._recall_latency_ms[0] == 5.0
+
+
+def test_stats_reports_stale_facts(mem):
+    fact_id = mem.remember(
+        "Stale Fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    cursor = mem._shared_conn.cursor()
+    cursor.execute(
+        "UPDATE facts SET expires_at = ? WHERE id = ?",
+        ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), fact_id)
+    )
+    mem._shared_conn.commit()
+
+    stats = mem.stats()
+
+    assert stats["stale_facts"] == 1
+    assert stats["stale_ratio"] == 1.0
+
+
+def test_stats_reports_superseded_ratio(mem):
+    fact_id = mem.remember(
+        "Alter Fakt",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    mem.supersede(
+        fact_id,
+        "Neuer Fakt",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    stats = mem.stats()
+
+    assert stats["superseded_facts"] == 1
+    assert stats["total_facts"] == 2
+    assert stats["superseded_ratio"] == 0.5
+
+
+def test_stats_by_class_ratio_sums_to_one(mem):
+    mem.remember(
+        "Identity Fact",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0
+    )
+    mem.remember(
+        "Preference Fact",
+        authority_class="preference",
+        source="conversation",
+        confidence=0.9
+    )
+    mem.remember(
+        "Evidence Fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    ratios = mem.stats()["by_class_ratio"]
+
+    assert pytest.approx(sum(ratios.values())) == 1.0
+    assert ratios["identity"] == pytest.approx(1 / 3)
+    assert ratios["preference"] == pytest.approx(1 / 3)
+    assert ratios["evidence"] == pytest.approx(1 / 3)
+
+
+def test_stats_empty_db_latency_is_safe(mem):
+    stats = mem.stats()
+
+    assert stats["recalls"] == 0
+    assert stats["recall_latency_ms"] == {
+        "count": 0,
+        "avg": None,
+        "p50": None,
+        "p95": None,
+        "max": None,
+    }
+    assert stats["stale_ratio"] == 0.0
+    assert stats["superseded_ratio"] == 0.0
 
 
 if __name__ == "__main__":

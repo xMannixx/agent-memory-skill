@@ -145,9 +145,27 @@ def main():
         print(f"Rebound aktiv:    {s['rebound_active']}")
         print(f"Rebound Rest:     {s['rebound_remaining']}")
         print(f"Session Writes:   {s['session_writes']}")
+        print(f"Recalls:          {s['recalls']}")
+        latency = s.get("recall_latency_ms", {})
+        if latency.get("count"):
+            print(
+                "Recall Latenz:    "
+                f"avg={latency['avg']:.2f}ms "
+                f"p50={latency['p50']:.2f}ms "
+                f"p95={latency['p95']:.2f}ms "
+                f"max={latency['max']:.2f}ms"
+            )
+        else:
+            print("Recall Latenz:    keine Daten")
+        print(
+            f"Stale Facts:      {s['stale_facts']} "
+            f"({s['stale_ratio']:.1%})"
+        )
+        print(f"Superseded Ratio: {s['superseded_ratio']:.1%}")
         print(f"Nach Klasse:")
         for cls, count in s.get("by_class", {}).items():
-            print(f"  {cls}: {count}")
+            ratio = s.get("by_class_ratio", {}).get(cls, 0.0)
+            print(f"  {cls}: {count} ({ratio:.1%})")
 
     elif args.command == "learn":
         lid = mem.learn(args.action, args.context, args.outcome, args.insight)
