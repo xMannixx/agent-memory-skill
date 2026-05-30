@@ -88,6 +88,11 @@ def main():
     anom_p = subparsers.add_parser("anomalies", help="Anomalie-Eintraege anzeigen")
     anom_p.add_argument("--limit", "-n", type=int, default=10)
 
+    # consolidate
+    consolidate_p = subparsers.add_parser("consolidate", help="Aehnliche Facts konsolidieren")
+    consolidate_p.add_argument("--dry-run", action="store_true",
+                               help="Nur Bericht erzeugen, keine DB-Aenderung")
+
     args = parser.parse_args()
     mem = AgentMemory(db_path=args.db)
 
@@ -213,6 +218,22 @@ def main():
         for a in anomalies:
             meta = a.get("metadata") or {}
             print(f"[{a['ts']}] {a['reason']} count={meta.get('count')}")
+
+    elif args.command == "consolidate":
+        report = mem.consolidate(dry_run=args.dry_run)
+        mode = "DRY RUN" if report["dry_run"] else "APPLIED"
+        print(f"Konsolidierung:   {mode}")
+        print(f"Gruppen geprueft: {report['groups_examined']}")
+        print(f"Konsolidiert:     {report['facts_consolidated']}")
+        print(f"Superseded:       {report['facts_superseded']}")
+        for group in report["groups"]:
+            tags = ",".join(group["tags"]) or "-"
+            new_id = group["new_id"] or "(dry-run)"
+            print(
+                f"  {group['authority_class']} tags={tags}: "
+                f"{len(group['old_ids'])} -> {new_id} "
+                f"conf={group['confidence']:.2f}"
+            )
 
 
 if __name__ == "__main__":

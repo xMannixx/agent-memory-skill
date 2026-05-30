@@ -882,6 +882,86 @@ class AgentMemory:
             facts.append(fact)
         return facts
 
+    def consolidate(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Deterministische Konsolidierung aktiver Facts nach Lane+Tag-Set."""
+        facts = self.list_facts(limit=100000)
+        groups: Dict[tuple, List[Fact]] = {}
+        for fact in facts:
+            key = (fact.authority_class, tuple(sorted(fact.tags)))
+            groups.setdefault(key, []).append(fact)
+
+        candidate_groups = [
+            (key, group) for key, group in sorted(groups.items())
+            if len(group) >= 2
+        ]
+        report = {
+            "dry_run": dry_run,
+            "groups_examined": len(candidate_groups),
+            "facts_consolidated": 0,
+            "facts_superseded": 0,
+            "groups": [],
+        }
+
+        for key, group in candidate_groups:
+            authority_class, tags = key
+            ordered = sorted(
+                group,
+                key=lambda fact: (fact.confidence, fact.created_at, fact.id),
+                reverse=True,
+            )
+            representative = ordered[0]
+            old_ids = [fact.id for fact in ordered]
+            consolidated_confidence = min(
+                1.0,
+                representative.confidence + 0.05 * (len(group) - 1)
+            )
+            group_report = {
+                "authority_class": authority_class,
+                "tags": list(tags),
+                "representative_id": representative.id,
+                "old_ids": old_ids,
+                "new_id": representative.id if not dry_run else None,
+                "confidence": consolidated_confidence,
+                "superseded": len(group) - 1,
+            }
+
+            if not dry_run:
+                conn, should_close = self._connect()
+                cursor = conn.cursor()
+                try:
+                    cursor.execute(
+                        "UPDATE facts SET confidence = ?, tags = ? WHERE id = ?",
+                        (consolidated_confidence, json.dumps(list(tags)), representative.id)
+                    )
+                    for old_id in old_ids:
+                        if old_id == representative.id:
+                            continue
+                        cursor.execute(
+                            "UPDATE facts SET superseded_by = ? WHERE id = ?",
+                            (representative.id, old_id)
+                        )
+                        self._audit(
+                            "supersede",
+                            fact_id=representative.id,
+                            metadata={
+                                "old_id": old_id,
+                                "new_id": representative.id,
+                                "old_exists": cursor.rowcount > 0,
+                                "reason": "consolidate",
+                            },
+                            conn=conn,
+                        )
+                    conn.commit()
+                finally:
+                    if should_close:
+                        conn.close()
+
+            report["facts_consolidated"] += 1
+            report["facts_superseded"] += len(group) - 1
+            report["groups"].append(group_report)
+
+        return report
+
     def supersede(self, old_fact_id: str, new_content: str, **kwargs) -> Optional[str]:
         new_id = self.remember(new_content, **kwargs)
         if not new_id:

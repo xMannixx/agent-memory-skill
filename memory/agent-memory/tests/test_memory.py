@@ -1270,5 +1270,162 @@ def test_decay_respects_min_confidence_limit(frozen_mem):
     assert all("Candidate 1" not in f.content for f in facts)
 
 
+# ==================== TEST 14: Consolidation ====================
+
+def test_consolidate_merges_duplicate_lane_tag_group(mem):
+    first = mem.remember(
+        "Projekt nutzt SQLite",
+        tags=["project", "db"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    second = mem.remember(
+        "SQLite ist Memory Backend",
+        tags=["db", "project"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    report = mem.consolidate()
+    active = mem.list_facts(tags=["project"], authority_class="evidence")
+
+    assert first is not None
+    assert second is not None
+    assert report["facts_consolidated"] == 1
+    assert report["facts_superseded"] == 1
+    assert len(active) == 1
+    assert active[0].confidence == pytest.approx(0.85)
+    assert active[0].content == "SQLite ist Memory Backend"
+
+
+def test_consolidate_preserves_superseded_for_inspection(mem):
+    first = mem.remember(
+        "Fact A",
+        tags=["same"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    second = mem.remember(
+        "Fact B",
+        tags=["same"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    mem.consolidate()
+    all_facts = mem.list_facts(include_superseded=True)
+
+    assert mem.get_fact(first) is not None
+    assert mem.get_fact(second) is not None
+    superseded = [f for f in all_facts if f.superseded_by]
+    active = [f for f in all_facts if f.superseded_by is None]
+    assert len(superseded) == 1
+    assert len(active) == 1
+    assert superseded[0].superseded_by == active[0].id
+
+
+def test_consolidate_dry_run_makes_no_changes(mem):
+    mem.remember(
+        "Dry A",
+        tags=["dry"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    mem.remember(
+        "Dry B",
+        tags=["dry"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    report = mem.consolidate(dry_run=True)
+    active = mem.list_facts(tags=["dry"], authority_class="evidence")
+
+    assert report["dry_run"] is True
+    assert report["facts_consolidated"] == 1
+    assert report["groups"][0]["new_id"] is None
+    assert len(active) == 2
+    assert all(f.superseded_by is None for f in active)
+
+
+def test_consolidate_is_deterministic(mem):
+    low = mem.remember(
+        "Lower confidence",
+        tags=["det"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    high = mem.remember(
+        "Higher confidence",
+        tags=["det"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    report = mem.consolidate(dry_run=True)
+
+    assert low is not None
+    assert report["groups"][0]["representative_id"] == high
+    assert report["groups"][0]["confidence"] == pytest.approx(0.85)
+
+
+def test_consolidate_idempotent_second_run_noop(mem):
+    mem.remember(
+        "Once A",
+        tags=["once"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    mem.remember(
+        "Once B",
+        tags=["once"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    first = mem.consolidate()
+    second = mem.consolidate()
+
+    assert first["facts_consolidated"] == 1
+    assert second["facts_consolidated"] == 0
+    assert second["facts_superseded"] == 0
+
+
+def test_consolidate_audited(mem):
+    mem.remember(
+        "Audit A",
+        tags=["audit-consolidate"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.7
+    )
+    mem.remember(
+        "Audit B",
+        tags=["audit-consolidate"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8
+    )
+
+    report = mem.consolidate()
+    audit = mem.get_audit(op="supersede", limit=10)
+
+    assert report["facts_superseded"] == 1
+    assert len([
+        entry for entry in audit
+        if (entry["metadata"] or {}).get("reason") == "consolidate"
+    ]) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
