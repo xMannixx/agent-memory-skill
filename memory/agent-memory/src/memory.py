@@ -13,6 +13,7 @@ import json
 import hashlib
 import tempfile
 import shutil
+from types import MappingProxyType
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from pathlib import Path
@@ -21,28 +22,31 @@ from dataclasses import dataclass, asdict
 
 # ==================== AUTHORITY POLICY ====================
 
-AUTHORITY_POLICY = {
+_AUTHORITY_POLICY = {
     "identity": {
         "ttl_days": None,           # Nie löschen — Floor
         "min_confidence": 0.9,
-        "allowed_sources": ["observation", "conversation"],
+        "allowed_sources": ("observation", "conversation"),
     },
     "preference": {
         "ttl_days": 14,
         "min_confidence": 0.3,
-        "allowed_sources": ["conversation", "observation"],
+        "allowed_sources": ("conversation", "observation"),
     },
     "evidence": {
         "ttl_days": 60,
         "min_confidence": 0.5,
-        "allowed_sources": ["conversation", "observation", "inference"],
+        "allowed_sources": ("conversation", "observation", "inference"),
     },
     "authorization": {
         "ttl_days": 90,
         "min_confidence": 0.9,
-        "allowed_sources": ["observation"],  # NICHT aus conversation
+        "allowed_sources": ("observation",),  # NICHT aus conversation
     },
 }
+AUTHORITY_POLICY = MappingProxyType({
+    key: MappingProxyType(value) for key, value in _AUTHORITY_POLICY.items()
+})
 
 REBOUND_IDLE_THRESHOLD_HOURS = 6
 REBOUND_MAX_FACTS_AFTER_IDLE = 3
@@ -395,6 +399,14 @@ class AgentMemory:
         payload = f"{authority_class}:{normalized}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:12]
 
+    def _escape_like(self, value: str) -> str:
+        return (
+            value
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_")
+        )
+
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
 
@@ -456,6 +468,14 @@ class AgentMemory:
             f"{prefix}confidence, {prefix}authority_class, {prefix}created_at, "
             f"{prefix}last_accessed, {prefix}access_count, {prefix}expires_at, "
             f"{prefix}superseded_by"
+        )
+
+    def _row_to_entity(self, row) -> Entity:
+        return Entity(
+            id=row[0], name=row[1], entity_type=row[2],
+            attributes=json.loads(row[3] or "{}"),
+            first_seen=row[4], last_updated=row[5],
+            fact_ids=json.loads(row[6] or "[]")
         )
 
     # ==================== FACTS ====================
@@ -696,10 +716,15 @@ class AgentMemory:
             "UPDATE facts SET superseded_by = ? WHERE id = ?",
             (new_id, old_fact_id)
         )
+        old_exists = cursor.rowcount > 0
         self._audit(
             "supersede",
             fact_id=new_id,
-            metadata={"old_id": old_fact_id, "new_id": new_id},
+            metadata={
+                "old_id": old_fact_id,
+                "new_id": new_id,
+                "old_exists": old_exists,
+            },
             conn=conn,
         )
         conn.commit()
@@ -711,7 +736,12 @@ class AgentMemory:
         conn, should_close = self._connect()
         cursor = conn.cursor()
         cursor.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
-        self._audit("forget", fact_id=fact_id, conn=conn)
+        self._audit(
+            "forget",
+            fact_id=fact_id,
+            metadata={"removed": cursor.rowcount},
+            conn=conn,
+        )
         conn.commit()
         if should_close:
             conn.close()
@@ -776,8 +806,8 @@ class AgentMemory:
         params = []
 
         if context:
-            sql += " AND context LIKE ?"
-            params.append(f"%{context}%")
+            sql += " AND context LIKE ? ESCAPE '\\'"
+            params.append(f"%{self._escape_like(context)}%")
         if outcome:
             sql += " AND outcome = ?"
             params.append(outcome)
@@ -820,15 +850,17 @@ class AgentMemory:
         cursor = conn.cursor()
 
         cursor.execute(
-            "SELECT id FROM entities WHERE name = ? AND entity_type = ?",
+            "SELECT id, attributes FROM entities WHERE name = ? AND entity_type = ?",
             (name, entity_type)
         )
         existing = cursor.fetchone()
 
         if existing:
+            merged_attributes = json.loads(existing[1] or "{}")
+            merged_attributes.update(attributes)
             cursor.execute(
                 "UPDATE entities SET attributes = ?, last_updated = ? WHERE id = ?",
-                (json.dumps(attributes), now, existing[0])
+                (json.dumps(merged_attributes), now, existing[0])
             )
             entity_id = existing[0]
         else:
@@ -862,12 +894,7 @@ class AgentMemory:
         if not row:
             return None
 
-        return Entity(
-            id=row[0], name=row[1], entity_type=row[2],
-            attributes=json.loads(row[3] or "{}"),
-            first_seen=row[4], last_updated=row[5],
-            fact_ids=json.loads(row[6] or "[]")
-        )
+        return self._row_to_entity(row)
 
     def update_entity(self, name: str, entity_type: str,
                       attributes: Dict[str, Any]) -> Optional[Entity]:
@@ -889,10 +916,12 @@ class AgentMemory:
             "UPDATE entities SET attributes = ?, last_updated = ? WHERE id = ?",
             (json.dumps(existing), self._now(), row[0])
         )
+        cursor.execute("SELECT * FROM entities WHERE id = ?", (row[0],))
+        updated = cursor.fetchone()
         conn.commit()
         if should_close:
             conn.close()
-        return self.get_entity(name, entity_type)
+        return self._row_to_entity(updated)
 
     def link_fact_to_entity(self, entity_name: str, fact_id: str):
         conn, should_close = self._connect()
@@ -926,13 +955,7 @@ class AgentMemory:
         rows = cursor.fetchall()
         if should_close:
             conn.close()
-        return [
-            Entity(id=r[0], name=r[1], entity_type=r[2],
-                   attributes=json.loads(r[3] or "{}"),
-                   first_seen=r[4], last_updated=r[5],
-                   fact_ids=json.loads(r[6] or "[]"))
-            for r in rows
-        ]
+        return [self._row_to_entity(r) for r in rows]
 
     # ==================== UTILITIES ====================
 

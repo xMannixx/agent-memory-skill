@@ -5,6 +5,7 @@ Tests für AgentMemory — analog zu Lenas pytest 6/6
 import sys
 import sqlite3
 import pytest
+from types import MappingProxyType
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -351,6 +352,101 @@ def test_lessons_and_entities(mem):
     entity = mem.get_entity("Perry", "person")
     assert entity is not None
     assert entity.attributes["username"] == "xPerryx"
+
+
+def test_get_lessons_treats_percent_and_underscore_literally(mem):
+    """LIKE-Suche escaped Nutzerinput statt %/_ als Wildcards zu interpretieren."""
+    mem.learn(
+        action="Wildcard test",
+        context="literal_100%_ctx",
+        outcome="neutral",
+        insight="Soll gefunden werden"
+    )
+    mem.learn(
+        action="Wildcard test",
+        context="literalX100Y_ctx",
+        outcome="neutral",
+        insight="Soll nicht gefunden werden"
+    )
+
+    lessons = mem.get_lessons(context="literal_100%_ctx")
+
+    assert len(lessons) == 1
+    assert lessons[0].context == "literal_100%_ctx"
+
+
+def test_track_entity_merges_attributes(mem):
+    """track_entity ersetzt bestehende Attribute nicht mehr komplett."""
+    entity_id = mem.track_entity("Perry", "person", {
+        "username": "xPerryx",
+        "language": "de",
+    })
+    again_id = mem.track_entity("Perry", "person", {
+        "style": "direkt",
+    })
+
+    entity = mem.get_entity("Perry", "person")
+
+    assert again_id == entity_id
+    assert entity.attributes == {
+        "username": "xPerryx",
+        "language": "de",
+        "style": "direkt",
+    }
+
+
+def test_update_entity_returns_updated_entity_without_extra_lookup(mem):
+    """update_entity merged Attribute und gibt direkt die aktualisierte Entity zurueck."""
+    mem.track_entity("Hermes", "agent", {"role": "assistant"})
+
+    updated = mem.update_entity("Hermes", "agent", {"memory": "sqlite"})
+
+    assert updated is not None
+    assert updated.attributes == {"role": "assistant", "memory": "sqlite"}
+
+
+def test_authority_policy_is_immutable():
+    """Authority Policy ist gegen versehentliche Laufzeitmutation geschuetzt."""
+    assert isinstance(AUTHORITY_POLICY, MappingProxyType)
+    assert isinstance(AUTHORITY_POLICY["evidence"], MappingProxyType)
+    with pytest.raises(TypeError):
+        AUTHORITY_POLICY["new"] = {}
+    with pytest.raises(TypeError):
+        AUTHORITY_POLICY["evidence"]["min_confidence"] = 0.0
+
+
+def test_forget_audit_includes_removed_count(mem):
+    """forget-Audit zeigt, ob tatsaechlich ein Fact geloescht wurde."""
+    fact_id = mem.remember(
+        "Wird geloescht",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+    mem.forget(fact_id)
+    mem.forget("does-not-exist")
+
+    entries = mem.get_audit(op="forget", limit=10)
+    removed_by_id = {e["fact_id"]: e["metadata"]["removed"] for e in entries}
+
+    assert removed_by_id[fact_id] == 1
+    assert removed_by_id["does-not-exist"] == 0
+
+
+def test_supersede_audit_includes_old_exists(mem):
+    """supersede-Audit markiert, ob der alte Fact wirklich existierte."""
+    new_id = mem.supersede(
+        "does-not-exist",
+        "Neuer Fact ohne alten Vorganger",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    entry = mem.get_audit(op="supersede", limit=1)[0]
+
+    assert new_id is not None
+    assert entry["metadata"]["old_exists"] is False
 
 
 # ==================== TEST 7: Schema-Indexe und WAL ====================
