@@ -1,34 +1,36 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, Lessons, Entities with Authority Lanes and Rebound-Protection. Auto-injects context at session start via plugin."
-version: 1.1.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, Authority Lanes, Rebound-Protection, and budgeted query-aware plugin retrieval."
+version: 2.0.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [memory, sqlite, persistence, facts, lessons, entities, authority-lanes, plugin]
+    tags: [memory, sqlite, persistence, facts, snippets, lessons, entities, authority-lanes, plugin, retrieval]
     category: memory
 ---
 
 # AgentMemory Skill
 
-Persistent memory system for Hermes Agent with structured Authority Lanes, Rebound-Protection, and automatic session injection via plugin.
+Persistent memory system for Hermes Agent with structured Authority Lanes, raw recall snippets, Rebound-Protection, and budgeted plugin retrieval.
 
 Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Authority Lanes (identity / preference / evidence / authorization)
 - Rebound-Protection after idle phases (signalfoundry / Moltbook pattern)
 - Class-specific TTL and forget_stale()
 - Source-Trust hierarchy
-- Auto-injection plugin (no manual loading needed)
+- Raw recall snippets kept separate from semantic facts
+- Auto-injection plugin with per-lane budgets and query-aware retrieval
 
 ## When to Use
 
 Load this skill when you want persistent memory across Hermes sessions that:
 - Survives restarts
 - Separates identity facts from preferences and technical evidence
+- Keeps raw conversation snippets searchable without auto-injecting them
 - Prevents memory injection attacks (authorization only from observation)
-- Auto-loads context at session start without user intervention
+- Auto-loads bounded context at session start and retrieves relevant evidence later
 
 ## Installation
 
@@ -45,6 +47,7 @@ mkdir -p $HERMES/agent-memory/tests
 cp src/memory.py $HERMES/agent-memory/src/
 cp cli/fact.py   $HERMES/agent-memory/cli/
 cp tests/test_memory.py $HERMES/agent-memory/tests/
+cp tests/test_plugin.py $HERMES/agent-memory/tests/
 ```
 
 ### 2. Install plugin
@@ -74,8 +77,8 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 
 ```bash
 cd ~/.hermes/agent-memory
-python3 -m pytest tests/test_memory.py -v
-# Expected: 12/12 passed
+python3 -m pytest tests -v
+# Expected: 87 passed
 ```
 
 ## Authority Lanes
@@ -130,6 +133,10 @@ mem.learn(action="Deployed without fallback",
 # Track an entity
 mem.track_entity("Manni", "person", {"username": "xPerryx", "language": "de"})
 
+# Store raw recall separately from facts
+mem.remember_snippet("Discussed query-aware retrieval", session_id="demo")
+snippets = mem.search_snippets("query-aware", session_id="demo")
+
 # Stats
 print(mem.stats())
 
@@ -155,6 +162,15 @@ $PYTHON $CLI list --authority identity
 # Stats
 $PYTHON $CLI stats
 
+# Raw recall snippets
+$PYTHON $CLI snippet add "Discussed local-first retrieval" --session demo
+$PYTHON $CLI snippet search retrieval --session demo
+
+# Audit / snapshots / consolidation
+$PYTHON $CLI audit --limit 10
+$PYTHON $CLI snapshot --label before-change
+$PYTHON $CLI consolidate --dry-run
+
 # Cleanup
 $PYTHON $CLI forget-stale
 
@@ -164,12 +180,25 @@ $PYTHON $CLI learn "Action" "Context" positive "Insight"
 
 ## Auto-Injection via Plugin
 
-Once installed, the plugin injects memory context automatically at the first turn of every session via `pre_llm_call` hook:
+Once installed, the plugin builds memory context automatically via the `pre_llm_call` hook.
 
-- **identity**: all (no limit, never expires)
+First turn:
+
+- **identity**: permanent floor, budget-limited
 - **preference**: last 5
 - **evidence**: last 10
 - **negative lessons**: last 3
+
+Later turns:
+
+- no injection unless the hook provides a current user message
+- identity remains available as a small floor
+- relevant evidence is retrieved from the user message
+- all lanes are clipped by per-lane budgets
+
+`authorization` facts are never prompt-injected. They are allowed only from
+`observation` source and should be used by explicit code paths, not automatic
+context injection.
 
 No manual loading required.
 
@@ -180,14 +209,19 @@ No manual loading required.
 - `_check_rebound()` must run after `_init_db()` — `memory_meta` must exist first.
 - `startup_skills` alone is NOT enough for auto-injection. The plugin with `pre_llm_call` hook is required.
 - `authorization` facts from `conversation` source are silently rejected by design.
+- Raw snippets are recall memory, not facts. Store them with `remember_snippet()` and search them with `search_snippets()`.
+- The plugin uses character budgets instead of a tokenizer to avoid extra runtime dependencies.
 
 ## Architecture Decisions
 
 - **Floor (identity)** never decays — idle periods must not lower the entry threshold.
 - **Rebound-Cap**: After >6h idle, max 3 new facts — prevents memory flooding. Identity is exempt.
 - **Sliding TTL**: Read access refreshes non-identity expiry, so active facts survive cleanup.
+- **Recall snippets are separate**: raw conversation memory does not pollute semantic facts and is not auto-injected.
+- **Prompt budgets**: plugin context is clipped per lane to keep first-turn and later-turn prompts bounded.
 - **Timer as compactor only** — writing is event-driven (on `remember()`), not time-based.
 - **authorization only from observation** — prevents privilege escalation via conversation.
+- **authorization never auto-injected** — sensitive permission memory is not placed into prompts by default.
 - **forget_stale() class-aware** — identity: never, preference: 14d, evidence: 60d, authorization: 90d.
 
 ## References

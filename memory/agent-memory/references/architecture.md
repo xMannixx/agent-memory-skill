@@ -46,3 +46,46 @@ Solution: Session-level batch counter.
 The systemd timer only calls forget_stale().
 It never writes new facts. Writing is always event-driven.
 This keeps the memory consistent — no background surprises.
+
+## Recall Snippets
+
+Facts are distilled semantic memory. Some context is useful before it is
+distilled, so raw conversation recall lives in a separate `recall_snippets`
+lane.
+
+- Snippets have their own SQLite table and FTS5 index.
+- Snippets preserve source, optional session ID, timestamp, expiry, and metadata.
+- Snippets are searched with `search_snippets()`, not `recall()`.
+- Snippets are not auto-injected into the prompt.
+
+This keeps episodic/raw recall available without polluting authority-scored
+facts.
+
+## Plugin Retrieval Policy
+
+The plugin uses a bounded two-phase strategy:
+
+- First turn: inject a compact baseline of identity, preference, evidence, and
+  negative lessons.
+- Later turns: inject nothing unless the hook provides a current user message.
+  When a message is available, keep the identity floor and retrieve relevant
+  evidence for that query.
+- Every lane has a limit and character budget.
+- `authorization` facts are never prompt-injected.
+
+Authorization memory is intentionally available only through explicit code
+paths. Prompt injection should not be able to turn permission memory into model
+instructions.
+
+## Smart Retrieval Boundary
+
+The local-first v2.0 work keeps retrieval dependency-free:
+
+- FTS5 remains the only search backend.
+- Natural-language queries are normalized into safe FTS terms before matching.
+- The plugin filters broad FTS candidates by query-term overlap to avoid
+  injecting weakly related evidence.
+
+Hybrid vector retrieval with sqlite-vec is intentionally left as a separate
+design step because it introduces optional native dependencies and embedding
+provider decisions.

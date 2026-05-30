@@ -8,10 +8,10 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 
 | Milestone | Focus | Status |
 |-----------|-------|--------|
-| [v1.2 - Stability & Hygiene](https://github.com/xMannixx/agent-memory-skill/milestone/1) | Make the current SQLite memory core predictable, indexed, testable, and easier to maintain. | Planned |
-| [v1.3 - Audit & Recovery](https://github.com/xMannixx/agent-memory-skill/milestone/2) | Add auditability, rollback, anomaly detection, and operational stats. | Planned |
-| [v1.4 - Consolidation & Decay](https://github.com/xMannixx/agent-memory-skill/milestone/3) | Move from simple retention windows toward consolidation and confidence decay. | Planned |
-| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | Planned |
+| [v1.2 - Stability & Hygiene](https://github.com/xMannixx/agent-memory-skill/milestone/1) | Make the current SQLite memory core predictable, indexed, testable, and easier to maintain. | Complete |
+| [v1.3 - Audit & Recovery](https://github.com/xMannixx/agent-memory-skill/milestone/2) | Add auditability, rollback, anomaly detection, and operational stats. | Complete |
+| [v1.4 - Consolidation & Decay](https://github.com/xMannixx/agent-memory-skill/milestone/3) | Move from simple retention windows toward consolidation and confidence decay. | Complete |
+| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | In progress: local-first retrieval shipped; hybrid vector search remains |
 
 ## Priority Tiers
 
@@ -24,23 +24,23 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 
 ## Planned Work
 
-| # | Issue | Milestone | Tier | Area |
-|---|-------|-----------|------|------|
-| 1 | [#3 `feat(core): introduce recall lane for raw conversation snippets`](https://github.com/xMannixx/agent-memory-skill/issues/3) | v2.0 | `tier:exploratory` | `area:core`, `area:schema` |
-| 2 | [#4 `feat(cli): consolidate command to merge related facts`](https://github.com/xMannixx/agent-memory-skill/issues/4) | v1.4 | `tier:high-value` | `area:core`, `area:cli` |
-| 3 | [#5 `feat(search): hybrid FTS5 + sqlite-vec retrieval with RRF`](https://github.com/xMannixx/agent-memory-skill/issues/5) | v2.0 | `tier:exploratory` | `area:search` |
-| 4 | [#6 `feat(security): audit log, snapshots and rapid-change anomaly detection`](https://github.com/xMannixx/agent-memory-skill/issues/6) | v1.3 | `tier:must-do` | `area:security`, `area:schema` |
-| 5 | [#7 `feat(plugin): query-aware retrieval at second turn onward`](https://github.com/xMannixx/agent-memory-skill/issues/7) | v2.0 | `tier:exploratory` | `area:plugin` |
-| 6 | [#8 `feat(core): exponential confidence decay per authority lane`](https://github.com/xMannixx/agent-memory-skill/issues/8) | v1.4 | `tier:high-value` | `area:core`, `area:schema` |
-| 7 | [#9 `fix(core): make remember idempotent via content-hash IDs`](https://github.com/xMannixx/agent-memory-skill/issues/9) | v1.2 | `tier:must-do` | `area:core` |
-| 8 | [#10 `feat(schema): namespaces for multi-user and multi-agent memory`](https://github.com/xMannixx/agent-memory-skill/issues/10) | Backlog | `tier:polish` | `area:schema` |
-| 9 | [#11 `feat(core): self-observability stats and latency counters`](https://github.com/xMannixx/agent-memory-skill/issues/11) | v1.3 | `tier:polish` | `area:core`, `area:cli` |
-| 10 | [#12 `perf(schema): add facts and lessons indexes and enable WAL`](https://github.com/xMannixx/agent-memory-skill/issues/12) | v1.2 | `tier:must-do` | `area:schema` |
-| 11 | [#13 `feat(core): lesson and entity lifecycle with decay on use`](https://github.com/xMannixx/agent-memory-skill/issues/13) | v1.2 | `tier:polish` | `area:core`, `area:schema` |
-| 12 | [#14 `feat(core): finer source trust graduation and promotion rules`](https://github.com/xMannixx/agent-memory-skill/issues/14) | Backlog | `tier:polish` | `area:core` |
-| 13 | [#15 `feat(plugin): token budget, lazy tool retrieval, authorization lane decision`](https://github.com/xMannixx/agent-memory-skill/issues/15) | v2.0 | `tier:exploratory` | `area:plugin` |
-| 14 | [#16 `test(infra): file-DB coverage, property tests, frozen-time helpers`](https://github.com/xMannixx/agent-memory-skill/issues/16) | v1.2 | `tier:polish` | `area:tests` |
-| 15 | [#17 `refactor(core): small hygiene umbrella`](https://github.com/xMannixx/agent-memory-skill/issues/17) | v1.2 | `tier:polish` | `area:core` |
+| # | Issue | Milestone | Tier | Area | Status |
+|---|-------|-----------|------|------|--------|
+| 1 | [#3 `feat(core): introduce recall lane for raw conversation snippets`](https://github.com/xMannixx/agent-memory-skill/issues/3) | v2.0 | `tier:exploratory` | `area:core`, `area:schema` | Closed |
+| 2 | [#4 `feat(cli): consolidate command to merge related facts`](https://github.com/xMannixx/agent-memory-skill/issues/4) | v1.4 | `tier:high-value` | `area:core`, `area:cli` | Closed |
+| 3 | [#5 `feat(search): hybrid FTS5 + sqlite-vec retrieval with RRF`](https://github.com/xMannixx/agent-memory-skill/issues/5) | v2.0 | `tier:exploratory` | `area:search` | Open |
+| 4 | [#6 `feat(security): audit log, snapshots and rapid-change anomaly detection`](https://github.com/xMannixx/agent-memory-skill/issues/6) | v1.3 | `tier:must-do` | `area:security`, `area:schema` | Closed |
+| 5 | [#7 `feat(plugin): query-aware retrieval at second turn onward`](https://github.com/xMannixx/agent-memory-skill/issues/7) | v2.0 | `tier:exploratory` | `area:plugin` | Closed |
+| 6 | [#8 `feat(core): exponential confidence decay per authority lane`](https://github.com/xMannixx/agent-memory-skill/issues/8) | v1.4 | `tier:high-value` | `area:core`, `area:schema` | Closed |
+| 7 | [#9 `fix(core): make remember idempotent via content-hash IDs`](https://github.com/xMannixx/agent-memory-skill/issues/9) | v1.2 | `tier:must-do` | `area:core` | Closed |
+| 8 | [#10 `feat(schema): namespaces for multi-user and multi-agent memory`](https://github.com/xMannixx/agent-memory-skill/issues/10) | Backlog | `tier:polish` | `area:schema` | Open |
+| 9 | [#11 `feat(core): self-observability stats and latency counters`](https://github.com/xMannixx/agent-memory-skill/issues/11) | v1.3 | `tier:polish` | `area:core`, `area:cli` | Closed |
+| 10 | [#12 `perf(schema): add facts and lessons indexes and enable WAL`](https://github.com/xMannixx/agent-memory-skill/issues/12) | v1.2 | `tier:must-do` | `area:schema` | Closed |
+| 11 | [#13 `feat(core): lesson and entity lifecycle with decay on use`](https://github.com/xMannixx/agent-memory-skill/issues/13) | v1.2 | `tier:polish` | `area:core`, `area:schema` | Closed |
+| 12 | [#14 `feat(core): finer source trust graduation and promotion rules`](https://github.com/xMannixx/agent-memory-skill/issues/14) | Backlog | `tier:polish` | `area:core` | Open |
+| 13 | [#15 `feat(plugin): token budget, lazy tool retrieval, authorization lane decision`](https://github.com/xMannixx/agent-memory-skill/issues/15) | v2.0 | `tier:exploratory` | `area:plugin` | Closed |
+| 14 | [#16 `test(infra): file-DB coverage, property tests, frozen-time helpers`](https://github.com/xMannixx/agent-memory-skill/issues/16) | v1.2 | `tier:polish` | `area:tests` | Closed |
+| 15 | [#17 `refactor(core): small hygiene umbrella`](https://github.com/xMannixx/agent-memory-skill/issues/17) | v1.2 | `tier:polish` | `area:core` | Closed |
 
 ## Release Themes
 
@@ -58,7 +58,7 @@ This milestone moves beyond hard TTLs. The goal is to consolidate repeated evide
 
 ### v2.0 - Smart Retrieval
 
-This is the architectural retrieval milestone. It explores a recall lane for raw conversation snippets, hybrid FTS5 plus vector search, and smarter plugin injection that retrieves relevant memory instead of blindly injecting fixed top-N facts.
+This is the architectural retrieval milestone. The local-first portion has shipped: raw conversation snippets live in a separate recall lane, plugin prompt context is budgeted, authorization memory is explicitly not injected, and later turns can retrieve query-relevant evidence. The remaining v2.0 item is hybrid FTS5 plus sqlite-vec retrieval with reciprocal rank fusion.
 
 ## References
 

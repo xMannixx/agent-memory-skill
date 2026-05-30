@@ -1,6 +1,6 @@
 # agent-memory
 
-**Persistent SQLite memory for Hermes Agent** — structured Authority Lanes, Rebound-Protection, and zero-config auto-injection at session start.
+**Persistent SQLite memory for Hermes Agent** — structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.
 
 Built by [xMannixx](https://github.com/xMannixx), based on Lena OpenClaw's `agent-memory-1-0-0`.
 Architecture patterns from Moltbook #memory thread (signalfoundry, deicticprism).
@@ -17,10 +17,13 @@ A preference fact ("user likes short answers") has the same weight as a technica
 This skill adds a structured memory layer on top of Hermes with:
 
 - **Authority Lanes** — 4 classes with separate TTL, confidence thresholds, and source policies
+- **Recall snippets** — raw conversation recall stored separately from distilled semantic facts
 - **Rebound-Protection** — caps memory intake after idle phases to prevent flooding
-- **Auto-injection plugin** — loads your memory context at every session start, no user action needed
+- **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
+- **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
 - **Full-text search** — SQLite FTS5 with relevance ranking
-- **CLI** — manage facts, lessons, and entities from the terminal
+- **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, and recall latency counters
+- **CLI** — manage facts, snippets, lessons, entities, snapshots, and consolidation from the terminal
 - **systemd timer** — daily cleanup of stale facts
 
 ---
@@ -75,6 +78,7 @@ mkdir -p $HERMES/agent-memory/{src,cli,tests}
 cp memory/agent-memory/src/memory.py $HERMES/agent-memory/src/
 cp memory/agent-memory/cli/fact.py   $HERMES/agent-memory/cli/
 cp memory/agent-memory/tests/test_memory.py $HERMES/agent-memory/tests/
+cp memory/agent-memory/tests/test_plugin.py $HERMES/agent-memory/tests/
 
 # 3. Install the auto-injection plugin
 mkdir -p $HERMES/plugins/agent-memory-plugin
@@ -89,8 +93,8 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
-python3 -m pytest tests/test_memory.py -v
-# Expected: 9/9 passed
+python3 -m pytest tests -v
+# Expected: 87 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -143,6 +147,14 @@ mem.learn(
 # Track an entity
 mem.track_entity("Manni", "person", {"username": "xMannixx", "language": "de"})
 
+# Store raw conversation recall separately from facts
+mem.remember_snippet(
+    "Raw conversation detail before it is distilled into a fact",
+    session_id="session-2026-05-30",
+    metadata={"turn": 12},
+)
+snippets = mem.search_snippets("conversation detail", session_id="session-2026-05-30")
+
 # Stats
 print(mem.stats())
 # {'active_facts': 9, 'by_class': {'identity': 5, 'preference': 2, 'evidence': 2}, ...}
@@ -168,6 +180,16 @@ python3 $CLI list --authority identity
 # Stats
 python3 $CLI stats
 
+# Raw recall snippets
+python3 $CLI snippet add "Discussed local-first retrieval design" --session demo
+python3 $CLI snippet search retrieval --session demo
+
+# Audit, snapshots, and consolidation
+python3 $CLI audit --limit 10
+python3 $CLI snapshot --label before-refactor
+python3 $CLI snapshots
+python3 $CLI consolidate --dry-run
+
 # Cleanup stale facts
 python3 $CLI forget-stale
 
@@ -179,12 +201,18 @@ python3 $CLI learn "Action taken" "Context" positive "What was learned"
 
 ## Auto-Injection (Plugin)
 
-Once the plugin is enabled in `config.yaml`, it runs automatically at every session start via the `pre_llm_call` hook. It injects:
+Once the plugin is enabled in `config.yaml`, it runs automatically via the `pre_llm_call` hook.
 
-- All `identity` facts (no limit, never expires)
+On the first turn of a session it injects a compact baseline:
+
+- `identity` facts (permanent floor, budget-limited)
 - Last 5 `preference` facts
 - Last 10 `evidence` facts
 - Last 3 negative lessons ("do not repeat these")
+
+On later turns it stays quiet unless the hook receives a current user message. If a message is available, it keeps the identity floor and retrieves query-relevant `evidence` facts only. All sections are clipped by per-lane character budgets.
+
+`authorization` facts are never prompt-injected. They can be stored only from `observation` source and remain available for explicit code paths, not automatic prompt context.
 
 No `/skill` command needed. No manual loading. It just works.
 
@@ -214,7 +242,8 @@ agent-memory-skill/
 │       ├── cli/
 │       │   └── fact.py                       # CLI tool
 │       ├── tests/
-│       │   └── test_memory.py                # 9 tests, all passing
+│       │   ├── test_memory.py                # Core memory tests
+│       │   └── test_plugin.py                # Plugin retrieval/budget tests
 │       └── references/
 │           ├── architecture.md               # Design decisions
 │           └── moltbook-discussion.md        # Pattern origins
