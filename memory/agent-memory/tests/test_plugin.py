@@ -1,4 +1,4 @@
-"""Tests fuer das Hermes AgentMemory Plugin."""
+"""Tests for the Hermes AgentMemory plugin."""
 
 import sys
 from pathlib import Path
@@ -143,6 +143,7 @@ def test_plugin_later_turn_retrieves_relevant_evidence(mem):
         mem,
         is_first_turn=False,
         user_message="How should later turns retrieve memory?",
+        budgets=minimal_budgets(evidence={"limit": 1}),
     )
 
     assert context is not None
@@ -150,6 +151,67 @@ def test_plugin_later_turn_retrieves_relevant_evidence(mem):
     assert "database snapshots" not in context
     assert "## Preferences" not in context
     assert "## Lessons" not in context
+
+
+def test_plugin_later_turn_ranks_relevant_first(mem):
+    mem.remember(
+        "Unrelated note about database snapshots and retention",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    mem.remember(
+        "Server infrastructure uses VPS Ubuntu Nginx",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    mem.remember(
+        "Infrastructure planning mentions office equipment",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="how does the server infrastructure run",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 1},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "Server infrastructure uses VPS Ubuntu Nginx" in context
+    assert context.count("- ") == 1
+
+
+def test_plugin_does_not_drop_single_keyword_match(mem):
+    mem.remember(
+        "Server runs on Ubuntu Nginx",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="server infrastructure",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 10},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "Server runs on Ubuntu Nginx" in context
 
 
 def test_plugin_later_turn_keeps_identity_floor(mem):

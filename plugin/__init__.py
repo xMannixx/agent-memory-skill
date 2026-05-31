@@ -33,6 +33,15 @@ except Exception as exc:
     _IMPORT_ERROR = str(exc)
     AgentMemory = None
 
+try:
+    from text_norm import (
+        normalize as _norm_normalize,
+        query_terms as _norm_query_terms,
+    )
+except Exception:
+    _norm_query_terms = None
+    _norm_normalize = None
+
 DEFAULT_BUDGETS = {
     "identity": {"limit": 20, "max_chars": 4000},
     "preference": {"limit": 5, "max_chars": 1600},
@@ -174,22 +183,35 @@ def _query_terms(text: str) -> List[str]:
     ]
 
 
-def _term_key(term: str) -> str:
-    return term[:5]
+def _relevance_score(fact: Any, query_norm_terms: set[str]) -> float:
+    if _norm_query_terms is None or _norm_normalize is None:
+        return 0.0
+
+    content_terms = getattr(fact, "content", "")
+    fact_norm_terms = {
+        _norm_normalize(term)
+        for term in _norm_query_terms(content_terms)
+    }
+    return float(len(query_norm_terms & fact_norm_terms))
 
 
-def _filter_relevant_facts(facts: Iterable[Any], query: str) -> List[Any]:
-    query_keys = {_term_key(term) for term in _query_terms(query)}
-    if not query_keys:
+def _rank_relevant_facts(facts: Iterable[Any], query: str) -> List[Any]:
+    if _norm_query_terms is None or _norm_normalize is None:
         return list(facts)
 
-    relevant = []
-    for fact in facts:
-        content_keys = {_term_key(term) for term in _query_terms(fact.content)}
-        overlap = query_keys & content_keys
-        if len(overlap) >= min(2, len(query_keys)):
-            relevant.append(fact)
-    return relevant
+    query_norm_terms = {
+        _norm_normalize(term)
+        for term in _norm_query_terms(query)
+    }
+    if not query_norm_terms:
+        return list(facts)
+
+    scored = [
+        (_relevance_score(fact, query_norm_terms), index, fact)
+        for index, fact in enumerate(facts)
+    ]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [fact for _, _, fact in scored]
 
 
 def build_memory_context(
@@ -241,7 +263,7 @@ def build_memory_context(
             limit=candidate_limit,
             authority_class="evidence",
         )
-        evidence_facts = _filter_relevant_facts(
+        evidence_facts = _rank_relevant_facts(
             evidence_facts,
             user_message,
         )[:evidence_budget["limit"]]
