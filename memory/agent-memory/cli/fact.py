@@ -73,6 +73,18 @@ def main():
     audit_p.add_argument("--limit", "-n", type=int, default=20)
     audit_p.add_argument("--op", help="Auf einen Op-Typ filtern")
 
+    # audit-prune
+    audit_prune_p = subparsers.add_parser(
+        "audit-prune",
+        help="Prune old audit log rows"
+    )
+    audit_prune_p.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="Retention window in days"
+    )
+
     # snapshot
     snap_p = subparsers.add_parser("snapshot", help="Snapshot der DB anlegen")
     snap_p.add_argument("--label", help="Optionales Label")
@@ -164,6 +176,7 @@ def main():
         print(f"Superseded:       {s['superseded_facts']}")
         print(f"Lektionen:        {s['lessons']}")
         print(f"Entities:         {s['entities']}")
+        print(f"Audit Rows:       {s['audit_rows']}")
         print(f"Rebound aktiv:    {s['rebound_active']}")
         print(f"Rebound Rest:     {s['rebound_remaining']}")
         print(f"Session Writes:   {s['session_writes']}")
@@ -211,6 +224,10 @@ def main():
             fid = f" fact={e['fact_id']}" if e["fact_id"] else ""
             cls = f" {e['authority_class']}" if e["authority_class"] else ""
             print(f"[{e['ts']}] {flag} {e['op']}{cls}{fid}{reason}")
+
+    elif args.command == "audit-prune":
+        removed = mem.forget_old_audit(days=args.days)
+        print(f"Pruned {removed} audit rows")
 
     elif args.command == "snapshot":
         path = mem.snapshot(label=args.label)

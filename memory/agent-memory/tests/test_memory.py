@@ -1497,5 +1497,89 @@ def test_snippet_writes_and_cleanup_are_audited(frozen_mem):
     assert cleanups[0]["metadata"] == {"removed": 1}
 
 
+def test_forget_old_audit_removes_old_rows(frozen_mem):
+    frozen_mem.remember(
+        "Old fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+    frozen_mem.set_now(datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc))
+
+    removed = frozen_mem.forget_old_audit(days=90)
+
+    assert removed >= 1
+    assert frozen_mem.get_audit(op="write") == []
+
+
+def test_forget_old_audit_keeps_recent_rows(frozen_mem):
+    frozen_mem.remember(
+        "Recent fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+
+    removed = frozen_mem.forget_old_audit(days=90)
+
+    assert removed == 0
+    assert len(frozen_mem.get_audit(op="write")) >= 1
+
+
+def test_forget_old_audit_is_idempotent(frozen_mem):
+    frozen_mem.remember(
+        "Idempotent prune fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+    frozen_mem.set_now(datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc))
+
+    first_removed = frozen_mem.forget_old_audit(days=90)
+    second_removed = frozen_mem.forget_old_audit(days=90)
+
+    assert first_removed >= 1
+    assert second_removed == 0
+
+
+def test_forget_old_audit_writes_summary(frozen_mem):
+    frozen_mem.remember(
+        "Summary prune fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+    frozen_mem.set_now(datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc))
+
+    removed = frozen_mem.forget_old_audit(days=90)
+    summaries = frozen_mem.get_audit(op="audit_pruned", limit=10)
+
+    assert removed >= 1
+    assert len(summaries) == 1
+    assert summaries[0]["metadata"]["removed"] == removed
+
+
+def test_stats_reports_audit_rows(frozen_mem):
+    frozen_mem.remember(
+        "Audit stats one",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+    frozen_mem.remember(
+        "Audit stats two",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.8,
+    )
+
+    stats = frozen_mem.stats()
+    all_audit_rows = frozen_mem.get_audit(limit=10000)
+
+    assert isinstance(stats["audit_rows"], int)
+    assert stats["audit_rows"] > 0
+    assert stats["audit_rows"] == len(all_audit_rows)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

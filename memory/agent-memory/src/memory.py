@@ -62,6 +62,7 @@ ANOMALY_WINDOW_SECONDS = 60
 LESSON_TTL_DAYS = 180
 ENTITY_TTL_DAYS = 365
 RECALL_TTL_DAYS = 30
+AUDIT_RETENTION_DAYS = 90
 STATS_LATENCY_WINDOW = 200
 
 
@@ -1498,6 +1499,9 @@ class AgentMemory:
         cursor.execute("SELECT COUNT(*) FROM entities")
         entities = cursor.fetchone()[0]
 
+        cursor.execute("SELECT COUNT(*) FROM memory_audit")
+        audit_rows = cursor.fetchone()[0]
+
         cursor.execute("""
             SELECT authority_class, COUNT(*)
             FROM facts WHERE superseded_by IS NULL
@@ -1529,6 +1533,7 @@ class AgentMemory:
             "by_class_ratio": by_class_ratio,
             "lessons": lessons,
             "entities": entities,
+            "audit_rows": audit_rows,
             "stale_facts": stale_facts,
             "stale_ratio": stale_facts / active if active else 0.0,
             "superseded_ratio": superseded / total_facts if total_facts else 0.0,
@@ -1585,6 +1590,26 @@ class AgentMemory:
 
     def anomalies(self, limit: int = 10) -> List[Dict[str, Any]]:
         return self.get_audit(limit=limit, op="anomaly_detected")
+
+    def forget_old_audit(self, days: int = None) -> int:
+        if days is None:
+            days = AUDIT_RETENTION_DAYS
+
+        cutoff = (self._utc_now() - timedelta(days=days)).isoformat()
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM memory_audit WHERE ts < ?", (cutoff,))
+        removed = cursor.rowcount
+        if removed > 0:
+            self._audit(
+                "audit_pruned",
+                metadata={"removed": removed, "days": days},
+                conn=conn,
+            )
+        conn.commit()
+        if should_close:
+            conn.close()
+        return removed
 
     # ==================== SNAPSHOTS ====================
 
