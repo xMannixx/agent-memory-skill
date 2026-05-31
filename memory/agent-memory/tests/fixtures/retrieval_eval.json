@@ -1,0 +1,35 @@
+{
+  "_comment": "Self-contained retrieval eval set. Facts are synthetic German evidence facts (no private data). The harness seeds them into a fresh in-memory AgentMemory, then checks recall@3 on positives, a precision guard on hard_negatives, and strict pass on regressions (the queries that failed before v3.0).",
+  "facts": [
+    "Der VPS laeuft mit Ubuntu 24.04 und Nginx als Reverse Proxy",
+    "Die SQLite-Datenbank nutzt den WAL-Modus fuer bessere Nebenlaeufigkeit",
+    "Das naechtliche Backup laeuft per Cron-Job um 3 Uhr morgens",
+    "Die Jobsuche konzentriert sich auf Stellen im Bereich KI und Automatisierung",
+    "Nextcloud ist fuer die Dateifreigabe auf dem Host installiert",
+    "Die Dienste laufen in Docker-Containern hinter dem Reverse Proxy",
+    "Die Firewall UFW blockiert alle Ports ausser 22, 80 und 443",
+    "Monitoring erfolgt ueber Netdata auf Port 19999",
+    "Das Agent-Memory-Projekt verwendet FTS5 fuer die Volltextsuche",
+    "Die Bewerbungsunterlagen liegen auf Deutsch und Englisch vor",
+    "Der Lieblingskaffee ist Espresso mit Hafermilch",
+    "Am Wochenende war ein Ausflug in die Berge geplant"
+  ],
+  "positives": [
+    {"query": "wie ist die infrastruktur aufgebaut", "expect": "Nginx"},
+    {"query": "erzaehl mir was ueber den server", "expect": "VPS"},
+    {"query": "was weisst du ueber die datenbank", "expect": "WAL"},
+    {"query": "was ist der stand bei der jobsuche", "expect": "Bewerbung"},
+    {"query": "laeuft ein backup", "expect": "Cron"},
+    {"query": "welche suchtechnik nutzt das projekt", "expect": "FTS5"},
+    {"query": "womit werden die dienste betrieben", "expect": "Docker"}
+  ],
+  "hard_negatives": [
+    {"query": "erzaehl mir was ueber den server", "forbid": "Espresso"},
+    {"query": "was weisst du ueber die datenbank", "forbid": "Docker"},
+    {"query": "was ist der stand bei der jobsuche", "forbid": "Ubuntu"}
+  ],
+  "regressions": [
+    {"query": "wie laeuft die infrastruktur", "expect": "Nginx"},
+    {"query": "erzaehl mir was ueber den server", "expect": "VPS"}
+  ]
+}
