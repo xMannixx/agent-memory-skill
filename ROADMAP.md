@@ -11,7 +11,9 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v1.2 - Stability & Hygiene](https://github.com/xMannixx/agent-memory-skill/milestone/1) | Make the current SQLite memory core predictable, indexed, testable, and easier to maintain. | Complete |
 | [v1.3 - Audit & Recovery](https://github.com/xMannixx/agent-memory-skill/milestone/2) | Add auditability, rollback, anomaly detection, and operational stats. | Complete |
 | [v1.4 - Consolidation & Decay](https://github.com/xMannixx/agent-memory-skill/milestone/3) | Move from simple retention windows toward consolidation and confidence decay. | Complete |
-| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | In progress: local-first retrieval shipped; hybrid vector search remains |
+| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | Local-first retrieval shipped; only hybrid vector search (#5) remains |
+| [v2.1 - Hardening & Polish](https://github.com/xMannixx/agent-memory-skill/milestone/5) | Reliability and publishability: audit-log retention, plugin diagnostics, English code/CLI/prompt standardization. | Complete |
+| [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
 
 ## Priority Tiers
 
@@ -41,6 +43,12 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | 13 | [#15 `feat(plugin): token budget, lazy tool retrieval, authorization lane decision`](https://github.com/xMannixx/agent-memory-skill/issues/15) | v2.0 | `tier:exploratory` | `area:plugin` | Closed |
 | 14 | [#16 `test(infra): file-DB coverage, property tests, frozen-time helpers`](https://github.com/xMannixx/agent-memory-skill/issues/16) | v1.2 | `tier:polish` | `area:tests` | Closed |
 | 15 | [#17 `refactor(core): small hygiene umbrella`](https://github.com/xMannixx/agent-memory-skill/issues/17) | v1.2 | `tier:polish` | `area:core` | Closed |
+| 16 | [#18 `feat(core): audit-log retention and pruning`](https://github.com/xMannixx/agent-memory-skill/issues/18) | v2.1 | `tier:polish` | `area:core`, `area:schema` | Closed |
+| 17 | [#19 `feat(plugin): import diagnostics and doctor command`](https://github.com/xMannixx/agent-memory-skill/issues/19) | v2.1 | `tier:polish` | `area:plugin`, `area:cli` | Closed |
+| 18 | [#20 `docs(core): standardize code, CLI, and prompt language to English`](https://github.com/xMannixx/agent-memory-skill/issues/20) | v2.1 | `tier:polish` | `area:docs`, `area:core` | Closed |
+| 19 | [#21 `feat(core): German-aware normalization and token-prefix FTS query`](https://github.com/xMannixx/agent-memory-skill/issues/21) | v3.0 | `tier:must-do` | `area:search`, `area:core` | Closed |
+| 20 | [#22 `feat(plugin): score-based relevance ranking instead of binary filter`](https://github.com/xMannixx/agent-memory-skill/issues/22) | v3.0 | `tier:must-do` | `area:plugin`, `area:search` | Closed |
+| 21 | [#23 `test(search): retrieval eval harness with hard negatives and regressions`](https://github.com/xMannixx/agent-memory-skill/issues/23) | v3.0 | `tier:must-do` | `area:search`, `area:tests` | Closed |
 
 ## Release Themes
 
@@ -59,6 +67,14 @@ This milestone moves beyond hard TTLs. The goal is to consolidate repeated evide
 ### v2.0 - Smart Retrieval
 
 This is the architectural retrieval milestone. The local-first portion has shipped: raw conversation snippets live in a separate recall lane, plugin prompt context is budgeted, authorization memory is explicitly not injected, and later turns can retrieve query-relevant evidence. The remaining v2.0 item is hybrid FTS5 plus sqlite-vec retrieval with reciprocal rank fusion.
+
+### v2.1 - Hardening & Polish
+
+A reliability and publishability pass. Audit logging gained a retention window and a prune path so it no longer grows unbounded. The plugin now logs import and instantiation failures (instead of silently injecting nothing) and ships a `doctor` command and a `memory_status()` helper for troubleshooting. All German docstrings, comments, CLI strings, and injected prompt headers were standardized to English.
+
+### v3.0 - German-Aware Retrieval
+
+Retrieval became German-aware while staying fully deterministic and local (no embeddings, no LLM calls). The FTS query is built from unquoted token-prefix terms plus a synonym map, so `Server` matches `Serverkonfiguration` and `wie laeuft die Infrastruktur` reaches the VPS/Nginx fact. A lightweight, attribution-free German stemmer and umlaut folding (ae/oe/ue/ss) drive relevance scoring. The plugin replaced its binary relevance gate with a score-based ranking that no longer drops good BM25 hits. A self-contained eval harness (positives + hard negatives + regressions) makes every retrieval change measurable.
 
 ## References
 

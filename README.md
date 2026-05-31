@@ -21,7 +21,7 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Rebound-Protection** — caps memory intake after idle phases to prevent flooding
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
 - **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
-- **Full-text search** — SQLite FTS5 with relevance ranking
+- **German-aware retrieval** — token-prefix FTS5 + synonym map, with fold/stem relevance scoring (deterministic, no embeddings)
 - **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, and recall latency counters
 - **CLI** — manage facts, snippets, lessons, entities, snapshots, and consolidation from the terminal
 - **systemd timer** — daily cleanup of stale facts
@@ -94,7 +94,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 87 passed
+# Expected: 106 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -210,7 +210,7 @@ On the first turn of a session it injects a compact baseline:
 - Last 10 `evidence` facts
 - Last 3 negative lessons ("do not repeat these")
 
-On later turns it stays quiet unless the hook receives a current user message. If a message is available, it keeps the identity floor and retrieves query-relevant `evidence` facts only. All sections are clipped by per-lane character budgets.
+On later turns it stays quiet unless the hook receives a current user message. If a message is available, it keeps the identity floor and retrieves query-relevant `evidence` facts via German-aware recall (token-prefix FTS + synonyms), then ranks candidates by a relevance score (stem/synonym overlap) without a binary cutoff. The only hard limit is the per-lane character budget.
 
 `authorization` facts are never prompt-injected. They can be stored only from `observation` source and remain available for explicit code paths, not automatic prompt context.
 
@@ -238,12 +238,18 @@ agent-memory-skill/
 │   └── agent-memory/
 │       ├── SKILL.md                          # Hermes skill definition
 │       ├── src/
-│       │   └── memory.py                     # Core AgentMemory class
+│       │   ├── memory.py                     # Core AgentMemory class
+│       │   ├── text_norm.py                  # German fold/stem/synonym helpers
+│       │   └── synonyms.json                 # Editable synonym map for recall
 │       ├── cli/
 │       │   └── fact.py                       # CLI tool
 │       ├── tests/
 │       │   ├── test_memory.py                # Core memory tests
-│       │   └── test_plugin.py                # Plugin retrieval/budget tests
+│       │   ├── test_text_norm.py             # Normalization tests
+│       │   ├── test_plugin.py                # Plugin retrieval/budget tests
+│       │   ├── test_retrieval_eval.py        # Retrieval eval harness
+│       │   └── fixtures/
+│       │       └── retrieval_eval.json       # Eval set (positives/negatives/regressions)
 │       └── references/
 │           ├── architecture.md               # Design decisions
 │           └── moltbook-discussion.md        # Pattern origins

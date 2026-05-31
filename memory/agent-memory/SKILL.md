@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, Authority Lanes, Rebound-Protection, and budgeted query-aware plugin retrieval."
-version: 2.0.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.0.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -21,7 +21,7 @@ Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Class-specific TTL and forget_stale()
 - Source-Trust hierarchy
 - Raw recall snippets kept separate from semantic facts
-- Auto-injection plugin with per-lane budgets and query-aware retrieval
+- Auto-injection plugin with per-lane budgets and German-aware, score-ranked query retrieval (token-prefix FTS + synonyms, deterministic, no embeddings)
 
 ## When to Use
 
@@ -78,7 +78,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 87 passed
+# Expected: 106 passed
 ```
 
 ## Authority Lanes

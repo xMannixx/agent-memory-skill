@@ -83,9 +83,34 @@ The local-first v2.0 work keeps retrieval dependency-free:
 
 - FTS5 remains the only search backend.
 - Natural-language queries are normalized into safe FTS terms before matching.
-- The plugin filters broad FTS candidates by query-term overlap to avoid
-  injecting weakly related evidence.
+- The plugin ranks broad FTS candidates by query relevance instead of dropping
+  them with a binary gate.
 
 Hybrid vector retrieval with sqlite-vec is intentionally left as a separate
 design step because it introduces optional native dependencies and embedding
 provider decisions.
+
+## German-Aware Retrieval (v3.0)
+
+German is the primary working language, so retrieval is German-aware while
+staying deterministic and dependency-free (no embeddings, no LLM calls). Two
+consistent layers, no FTS index migration:
+
+- FTS gate (broad recall): the query is built from UNQUOTED token-prefix terms
+  (`server*`, not `"server"*`) plus a synonym map (`synonyms.json`). The
+  unquoted prefix is what makes `server*` match the compound token
+  `serverkonfiguration`, and synonyms bridge gaps like `infrastruktur` ->
+  `vps`/`nginx`. Query terms come from `\w+`, so they are syntactically safe
+  without quotes.
+- Python scoring (relevance): `text_norm` applies a lightweight,
+  attribution-free German suffix stemmer and umlaut folding (`ae/oe/ue/ss`,
+  never bare vowels, so `schön` stays distinct from `schon`). Folding lives
+  only in this scoring layer and never in the FTS query, so the porter index
+  and the query never diverge.
+
+The plugin scores candidates by normalized stem/synonym overlap and re-orders
+them; it never drops a fact below a threshold. The per-lane character budget is
+the only hard cut. A self-contained eval harness
+(`tests/test_retrieval_eval.py` + `fixtures/retrieval_eval.json`) guards this
+with recall@3 on positives, a precision check on hard negatives, and strict
+regression cases (the queries that failed before v3.0).
