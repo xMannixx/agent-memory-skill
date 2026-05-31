@@ -177,6 +177,34 @@ def test_remember_and_recall(mem):
     assert any("Perry" in f.content for f in facts)
 
 
+def test_recall_matches_compound_via_prefix(mem):
+    fact_id = mem.remember(
+        "Serverkonfiguration uses hardened SSH settings",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    facts = mem.recall("Server")
+
+    assert fact_id is not None
+    assert any(f.id == fact_id for f in facts)
+
+
+def test_recall_matches_synonym(mem):
+    fact_id = mem.remember(
+        "VPS Ubuntu 24.04 with Nginx",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9
+    )
+
+    facts = mem.recall("Server")
+
+    assert fact_id is not None
+    assert any(f.id == fact_id for f in facts)
+
+
 # ==================== TEST 2: Authority Policy — authorization nur aus observation ====================
 
 def test_authorization_rejected_from_conversation(mem):

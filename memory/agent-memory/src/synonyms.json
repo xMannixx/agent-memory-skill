@@ -1,0 +1,7 @@
+{
+  "server": ["vps", "host", "maschine", "rechner", "serverkonfiguration"],
+  "infrastruktur": ["setup", "system", "hosting", "umgebung"],
+  "jobsuche": ["stellensuche", "bewerbung", "karriere", "job"],
+  "datenbank": ["db", "sqlite", "datenbanken"],
+  "fehler": ["bug", "problem", "error", "absturz"]
+}

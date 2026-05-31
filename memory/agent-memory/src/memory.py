@@ -20,6 +20,8 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from dataclasses import dataclass, asdict
 
+from text_norm import expand, query_terms
+
 
 # ==================== AUTHORITY POLICY ====================
 
@@ -164,6 +166,7 @@ class AgentMemory:
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
 
         self._init_db()
+        self._synonyms = self._load_synonyms()
         self._check_rebound()
 
     def _connect(self):
@@ -574,6 +577,40 @@ class AgentMemory:
             return self._quote_fts_query(query)
         return " OR ".join(self._quote_fts_query(term) for term in terms)
 
+    def _load_synonyms(self) -> Dict[str, List[str]]:
+        """Load recall synonym expansions from the module-local JSON file."""
+        try:
+            with (Path(__file__).parent / "synonyms.json").open(
+                encoding="utf-8"
+            ) as handle:
+                data = json.load(handle)
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            key: values
+            for key, values in data.items()
+            if isinstance(key, str)
+            and isinstance(values, list)
+            and all(isinstance(value, str) for value in values)
+        }
+
+    def _smart_fts_query(self, query: str) -> str:
+        """Build a safe token-prefix FTS query with synonym expansion."""
+        terms = query_terms(query)
+        if not terms:
+            return self._terms_fts_query(query)
+
+        expanded = [
+            term
+            for term in expand(terms, self._synonyms)
+            if re.fullmatch(r"\w+", term)
+        ]
+        if not expanded:
+            return self._terms_fts_query(query)
+        return " OR ".join(f"{term}*" for term in expanded)
+
     def _utc_now(self) -> datetime:
         return datetime.now(timezone.utc)
 
@@ -860,7 +897,7 @@ class AgentMemory:
                 AND (f.expires_at IS NULL OR f.expires_at > ?)
                 AND f.superseded_by IS NULL
             """
-            params = [self._terms_fts_query(query), min_confidence, self._now()]
+            params = [self._smart_fts_query(query), min_confidence, self._now()]
 
             if authority_class:
                 sql += " AND f.authority_class = ?"
