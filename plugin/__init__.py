@@ -18,15 +18,19 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("agent_memory_plugin")
 
 _MEMORY_SRC = Path.home() / ".hermes" / "agent-memory" / "src"
 if str(_MEMORY_SRC) not in sys.path:
     sys.path.insert(0, str(_MEMORY_SRC))
 
+_IMPORT_ERROR: Optional[str] = None
+
 try:
     from memory import AgentMemory
-except Exception:
+except Exception as exc:
+    logger.warning("agent-memory import failed from %s: %s", _MEMORY_SRC, exc)
+    _IMPORT_ERROR = str(exc)
     AgentMemory = None
 
 DEFAULT_BUDGETS = {
@@ -55,14 +59,49 @@ _QUERY_STOPWORDS = {
 
 
 def _get_memory():
+    global _IMPORT_ERROR
     if AgentMemory is None:
         logger.warning("AgentMemory konnte nicht geladen werden")
         return None
     try:
         return AgentMemory()
-    except Exception as e:
-        logger.warning("AgentMemory konnte nicht geladen werden: %s", e)
+    except Exception as exc:
+        logger.warning("AgentMemory instantiation failed: %s", exc)
+        _IMPORT_ERROR = str(exc)
         return None
+
+
+def memory_status() -> dict:
+    """Return diagnostic information about the plugin. Never raises."""
+    try:
+        db_path: Optional[str]
+        try:
+            db_path = str(Path.home() / ".hermes" / "agent-memory" / "memory.db")
+        except Exception:
+            db_path = None
+
+        available = False
+        if AgentMemory is not None:
+            try:
+                test_mem = AgentMemory()
+                available = True
+                db_path = test_mem.db_path
+            except Exception:
+                pass
+
+        return {
+            "available": available,
+            "src_path": str(_MEMORY_SRC),
+            "db_path": db_path,
+            "error": _IMPORT_ERROR,
+        }
+    except Exception:
+        return {
+            "available": False,
+            "src_path": str(_MEMORY_SRC),
+            "db_path": None,
+            "error": _IMPORT_ERROR,
+        }
 
 
 def register(ctx):

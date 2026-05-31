@@ -13,7 +13,7 @@ if str(MEMORY_SRC) not in sys.path:
     sys.path.insert(0, str(MEMORY_SRC))
 
 from memory import AgentMemory
-from plugin import _extract_user_message, build_memory_context
+from plugin import _extract_user_message, build_memory_context, memory_status
 
 
 @pytest.fixture
@@ -212,3 +212,40 @@ def test_extract_user_message_accepts_common_hook_shapes():
             {"role": "user", "content": "latest"},
         ]
     }) == "latest"
+
+
+_REQUIRED_KEYS = {"available", "src_path", "db_path", "error"}
+
+
+def test_memory_status_never_raises():
+    result = memory_status()
+    assert isinstance(result, dict)
+    assert _REQUIRED_KEYS <= result.keys()
+
+
+def test_memory_status_available_shape():
+    result = memory_status()
+    assert isinstance(result, dict)
+    assert _REQUIRED_KEYS <= result.keys()
+    assert isinstance(result["available"], bool)
+    assert isinstance(result["src_path"], str)
+    assert result["available"] is True
+    assert result["error"] is None
+
+
+def test_context_never_contains_error_text(mem):
+    mem.remember(
+        "Perry is the operator",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    context = build_memory_context(mem, is_first_turn=True)
+
+    if context is not None:
+        lower = context.lower()
+        assert "error" not in lower
+        assert "traceback" not in lower
+        assert "failed" not in lower
+        assert "import" not in lower

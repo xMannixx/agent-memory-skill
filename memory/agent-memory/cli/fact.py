@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """CLI wrapper für AgentMemory — Hermes Edition."""
 
+import os
+import sqlite3
 import sys
 import argparse
 from pathlib import Path
@@ -121,6 +123,9 @@ def main():
     snippet_search_p.add_argument("query")
     snippet_search_p.add_argument("--limit", "-n", type=int, default=10)
     snippet_search_p.add_argument("--session", help="Optionale Session-ID")
+
+    # doctor
+    subparsers.add_parser("doctor", help="Diagnose memory/plugin setup")
 
     args = parser.parse_args()
     mem = AgentMemory(db_path=args.db)
@@ -268,6 +273,36 @@ def main():
                 f"{len(group['old_ids'])} -> {new_id} "
                 f"conf={group['confidence']:.2f}"
             )
+
+    elif args.command == "doctor":
+        print(f"Memory src path:  {Path(__file__).parent.parent / 'src'}")
+        print(f"DB path:          {mem.db_path}")
+
+        _doctor_conn = sqlite3.connect(mem.db_path)
+        try:
+            _cur = _doctor_conn.cursor()
+            _cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)",
+                ("facts", "recall_snippets"),
+            )
+            _tables_present = {row[0] for row in _cur.fetchall()}
+            for _tbl in ("facts", "recall_snippets"):
+                _status = "present" if _tbl in _tables_present else "missing"
+                print(f"Table {_tbl!r}: {_status}")
+
+            s = mem.stats()
+            print(f"Active facts:     {s['active_facts']}")
+            print(f"Lessons:          {s['lessons']}")
+
+            _cur.execute("SELECT COUNT(*) FROM recall_snippets")
+            _snippet_count = _cur.fetchone()[0]
+            print(f"Snippets:         {_snippet_count}")
+        finally:
+            _doctor_conn.close()
+
+        plugin_path = Path(__file__).parents[3] / "plugin" / "__init__.py"
+        plugin_status = "present" if plugin_path.exists() else "missing"
+        print(f"Plugin file:      {plugin_path} ({plugin_status})")
 
     elif args.command == "snippet":
         if args.snippet_command == "add":
