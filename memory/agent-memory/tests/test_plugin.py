@@ -62,13 +62,13 @@ def test_plugin_first_turn_baseline_includes_existing_lanes(mem):
     context = build_memory_context(mem, is_first_turn=True)
 
     assert context is not None
-    assert "## Identität (permanent)" in context
+    assert "## Identity (permanent)" in context
     assert "Perry is the operator" in context
-    assert "## Präferenzen" in context
+    assert "## Preferences" in context
     assert "Prefer compact answers" in context
-    assert "## Kontext" in context
+    assert "## Context" in context
     assert "Hermes is testing retrieval" in context
-    assert "## Lektionen (nicht wiederholen)" in context
+    assert "## Lessons (do not repeat)" in context
     assert "Do not inject unlimited memory" in context
 
 
@@ -148,8 +148,8 @@ def test_plugin_later_turn_retrieves_relevant_evidence(mem):
     assert context is not None
     assert "query-aware retrieval" in context
     assert "database snapshots" not in context
-    assert "## Präferenzen" not in context
-    assert "## Lektionen" not in context
+    assert "## Preferences" not in context
+    assert "## Lessons" not in context
 
 
 def test_plugin_later_turn_keeps_identity_floor(mem):

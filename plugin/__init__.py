@@ -1,13 +1,13 @@
 """
-AgentMemory Plugin für Hermes.
+AgentMemory plugin for Hermes.
 
-Injiziert beim Start jeder Session:
-- Alle identity-Facts (immer, kein Ablauf)
-- Aktuelle evidence-Facts (letzte 10 zugegriffene)
-- Aktuelle preference-Facts (letzte 5)
-- Offene Lektionen (letzte 3 negative)
+Injected at start of each session:
+- All identity facts (always, no expiry)
+- Current evidence facts (last 10 accessed)
+- Current preference facts (last 5)
+- Open lessons (last 3 negative)
 
-via pre_llm_call Hook — kein manuelles Laden nötig.
+via pre_llm_call hook — no manual loading needed.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ _QUERY_STOPWORDS = {
 def _get_memory():
     global _IMPORT_ERROR
     if AgentMemory is None:
-        logger.warning("AgentMemory konnte nicht geladen werden")
+        logger.warning("AgentMemory could not be loaded")
         return None
     try:
         return AgentMemory()
@@ -115,7 +115,7 @@ def _budget_for(lane: str, budgets: Dict[str, Dict[str, int]]) -> Dict[str, int]
         try:
             budget["limit"] = max(0, int(env_limit))
         except ValueError:
-            logger.warning("Ignoriere ungueltiges Budget fuer %s: %s", lane, env_limit)
+            logger.warning("Ignore invalid budget for %s: %s", lane, env_limit)
     return budget
 
 
@@ -205,13 +205,13 @@ def build_memory_context(
 
     parts = []
 
-    # identity — immer, kein Ablauf; aber trotzdem budget-begrenzt.
+    # identity — always, no expiry; but still budget-limited.
     identity_budget = _budget_for("identity", budgets)
     identity_facts = mem.recall_by_authority("identity", limit=identity_budget["limit"])
     if identity_facts:
         lines = [f"- {f.content}" for f in identity_facts]
         section = _section(
-            "## Identität (permanent)",
+            "## Identity (permanent)",
             lines,
             identity_budget["max_chars"],
         )
@@ -220,16 +220,16 @@ def build_memory_context(
 
     evidence_budget = _budget_for("evidence", budgets)
     if is_first_turn:
-        # preference — letzte 5
+        # preference — last 5
         pref_budget = _budget_for("preference", budgets)
         pref_facts = mem.recall_by_authority("preference", limit=pref_budget["limit"])
         if pref_facts:
             lines = [f"- {f.content}" for f in pref_facts]
-            section = _section("## Präferenzen", lines, pref_budget["max_chars"])
+            section = _section("## Preferences", lines, pref_budget["max_chars"])
             if section:
                 parts.append(section)
 
-        # evidence — letzte 10 zugegriffene
+        # evidence — last 10 accessed
         evidence_facts = mem.recall_by_authority(
             "evidence",
             limit=evidence_budget["limit"],
@@ -248,18 +248,18 @@ def build_memory_context(
 
     if evidence_facts:
         lines = [f"- {f.content}" for f in evidence_facts]
-        section = _section("## Kontext", lines, evidence_budget["max_chars"])
+        section = _section("## Context", lines, evidence_budget["max_chars"])
         if section:
             parts.append(section)
 
     if is_first_turn:
-        # Lektionen — letzte 3 negative
+        # Lessons — last 3 negative
         lessons_budget = _budget_for("lessons", budgets)
         lessons = mem.get_lessons(outcome="negative", limit=lessons_budget["limit"])
         if lessons:
             lines = [f"- {l.insight}" for l in lessons]
             section = _section(
-                "## Lektionen (nicht wiederholen)",
+                "## Lessons (do not repeat)",
                 lines,
                 lessons_budget["max_chars"],
             )
@@ -274,9 +274,9 @@ def build_memory_context(
 
 def _inject_memory(*, is_first_turn: bool = False, **kwargs):
     """
-    Wird vor jedem LLM-Call aufgerufen.
-    Injiziert Memory-Kontext nur beim ersten Turn einer Session
-    um Context-Window-Verbrauch zu minimieren.
+    Called before each LLM call.
+    Injects memory context only on the first turn of a session
+    to minimize context window usage.
     """
     mem = _get_memory()
     if not mem:

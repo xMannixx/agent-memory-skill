@@ -1,9 +1,9 @@
 """
 AgentMemory - Persistent Memory for Hermes Agent
 
-Basiert auf Lena OpenClaw's agent-memory-1-0-0,
-erweitert mit Authority Lanes und Rebound-Protection
-aus den Moltbook signalfoundry/lucy17 Diskussionen.
+Based on Lena OpenClaw's agent-memory-1-0-0,
+extended with Authority Lanes and Rebound-Protection
+from the Moltbook signalfoundry/lucy17 discussions.
 
 MIT License
 """
@@ -25,8 +25,8 @@ from dataclasses import dataclass, asdict
 
 _AUTHORITY_POLICY = {
     "identity": {
-        "ttl_days": None,           # Nie löschen — Floor
-        "half_life_days": None,     # Kein Confidence-Decay — Identity ist Floor
+        "ttl_days": None,           # Never delete — Floor
+        "half_life_days": None,     # No confidence decay — Identity is Floor
         "min_confidence": 0.9,
         "allowed_sources": ("observation", "conversation"),
     },
@@ -46,7 +46,7 @@ _AUTHORITY_POLICY = {
         "ttl_days": 90,
         "half_life_days": 45,
         "min_confidence": 0.9,
-        "allowed_sources": ("observation",),  # NICHT aus conversation
+        "allowed_sources": ("observation",),  # NOT from conversation
     },
 }
 AUTHORITY_POLICY = MappingProxyType({
@@ -123,17 +123,17 @@ class Snippet:
 
 class AgentMemory:
     """
-    Persistent memory system für Hermes Agent.
+    Persistent memory system for Hermes Agent.
 
-    Basiert auf Lenas agent-memory-1-0-0 mit:
+    Based on Lena's agent-memory-1-0-0 with:
     - Authority Lanes (identity/preference/evidence/authorization)
-    - Rebound-Protection nach Idle-Phasen
-    - Klassenspezifisches forget_stale()
-    - Source-Trust-Hierarchie
+    - Rebound-Protection after idle phases
+    - Class-specific forget_stale()
+    - Source-trust hierarchy
 
     Usage:
         mem = AgentMemory()
-        mem.remember("Perry ist der Username", authority_class="identity",
+        mem.remember("Perry is the username", authority_class="identity",
                      source="observation", confidence=1.0)
         facts = mem.recall("username")
     """
@@ -153,8 +153,8 @@ class AgentMemory:
         self._rebound_active = False
         self._write_timestamps: List[datetime] = []
 
-        # Shared connection für :memory: (Tests) — SQLite in-memory
-        # verliert Daten wenn Connection geschlossen wird
+        # Shared connection for :memory: (Tests) — SQLite in-memory
+        # loses data when connection is closed
         self._shared_conn = None
         if db_path == ":memory:":
             self._shared_conn = sqlite3.connect(":memory:")
@@ -167,7 +167,7 @@ class AgentMemory:
         self._check_rebound()
 
     def _connect(self):
-        """Gibt (conn, should_close) zurück."""
+        """Returns (conn, should_close)."""
         if self._shared_conn is not None:
             return self._shared_conn, False
         return sqlite3.connect(self.db_path), True
@@ -192,7 +192,7 @@ class AgentMemory:
             )
         """)
 
-        # Migration: authority_class hinzufügen falls nicht vorhanden
+        # Migration: add authority_class if not present
         cursor.execute("PRAGMA table_info(facts)")
         columns = [row[1] for row in cursor.fetchall()]
         if "authority_class" not in columns:
@@ -428,9 +428,9 @@ class AgentMemory:
 
     def _check_rebound(self):
         """
-        Prüft ob Rebound-Modus aktiv.
-        Nach >REBOUND_IDLE_THRESHOLD_HOURS ohne Write: Rebound aktiv.
-        identity-Klasse (Floor) sinkt NIE ab.
+        Checks if Rebound mode is active.
+        After >REBOUND_IDLE_THRESHOLD_HOURS without write: Rebound is active.
+        identity class (Floor) never decreases.
         """
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -469,7 +469,7 @@ class AgentMemory:
                reason: Optional[str] = None,
                metadata: Optional[Dict[str, Any]] = None,
                conn: Optional[sqlite3.Connection] = None):
-        """Schreibt eine Zeile in memory_audit. Append-only by convention."""
+        """Writes a row to memory_audit. Append-only by convention."""
         own_conn = conn is None
         if own_conn:
             conn, should_close = self._connect()
@@ -500,7 +500,7 @@ class AgentMemory:
                 conn.close()
 
     def _record_write_and_check_anomaly(self):
-        """Rolling 60s Write-Counter; loggt Anomalie wenn Schwelle ueberschritten."""
+        """Rolling 60s write counter; logs anomaly if threshold exceeded."""
         now = self._utc_now()
         cutoff = now - timedelta(seconds=ANOMALY_WINDOW_SECONDS)
         self._write_timestamps = [
@@ -550,7 +550,7 @@ class AgentMemory:
         }
 
     def _generate_id(self, content: str, authority_class: str = "evidence") -> str:
-        """Deterministische Content-Hash-ID. Gleicher Text in gleicher Lane = gleicher Fakt."""
+        """Deterministic content-hash ID. Same text in same lane = same fact."""
         normalized = content.strip()
         payload = f"{authority_class}:{normalized}".encode("utf-8")
         return hashlib.sha256(payload).hexdigest()[:12]
@@ -733,11 +733,11 @@ class AgentMemory:
                  authority_class: str = "evidence",
                  expires_in_days: int = None) -> Optional[str]:
         """
-        Speichert einen Fakt.
+        Stores a fact.
 
-        Rebound-Protection: Nach Idle max REBOUND_MAX_FACTS_AFTER_IDLE Facts.
-        identity ist Floor — immer erlaubt, kein Cap.
-        authorization nur aus 'observation' erlaubt.
+        Rebound-Protection: After idle max REBOUND_MAX_FACTS_AFTER_IDLE facts.
+        identity is Floor — always allowed, no cap.
+        authorization only allowed from 'observation'.
         """
         policy = AUTHORITY_POLICY.get(authority_class, AUTHORITY_POLICY["evidence"])
 
@@ -791,7 +791,7 @@ class AgentMemory:
             self._log_write()
             return fact_id
 
-        # Rebound-Protection nur bei echten neuen Facts (identity = Floor, immer erlaubt)
+        # Rebound-Protection only for new facts (identity = Floor, always allowed)
         if self._rebound_active and authority_class != "identity":
             if self._rebound_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
                 self._audit(
@@ -977,7 +977,7 @@ class AgentMemory:
         return facts
 
     def consolidate(self, dry_run: bool = False) -> Dict[str, Any]:
-        """Deterministische Konsolidierung aktiver Facts nach Lane+Tag-Set."""
+        """Deterministic consolidation of active facts by lane+tag set."""
         facts = self.list_facts(limit=100000)
         groups: Dict[tuple, List[Fact]] = {}
         for fact in facts:
@@ -1099,8 +1099,8 @@ class AgentMemory:
 
     def forget_stale(self) -> Dict[str, int]:
         """
-        Klassenspezifisches Cleanup nach Policy-TTL.
-        identity wird NIE gelöscht (Floor).
+        Class-specific cleanup by policy TTL.
+        identity is never deleted (Floor).
         """
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -1139,10 +1139,10 @@ class AgentMemory:
                          session_id: Optional[str] = None,
                          metadata: Optional[Dict[str, Any]] = None) -> str:
         """
-        Speichert rohen Conversation-Recall getrennt von semantic facts.
+        Stores raw conversation recall separate from semantic facts.
 
-        Snippets werden nicht automatisch injiziert; sie sind nur ueber
-        search_snippets() abrufbar.
+        Snippets are not automatically injected; they are only retrievable
+        via search_snippets().
         """
         metadata = metadata or {}
         snippet_id = self._generate_id(
@@ -1445,7 +1445,7 @@ class AgentMemory:
         return [self._row_to_entity(r) for r in rows]
 
     def forget_stale_lifecycle(self) -> Dict[str, int]:
-        """Cleanup fuer abgelaufene Lessons und Entities."""
+        """Cleanup for expired lessons and entities."""
         conn, should_close = self._connect()
         cursor = conn.cursor()
         deleted = {}
@@ -1551,7 +1551,7 @@ class AgentMemory:
 
     def get_audit(self, limit: int = 100, since: Optional[str] = None,
                   op: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Liefert Audit-Eintraege, neueste zuerst. since: ISO-Timestamp."""
+        """Returns audit entries, newest first. since: ISO timestamp."""
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
@@ -1623,7 +1623,7 @@ class AgentMemory:
         return f"snapshot-{ts}{safe_label}.db"
 
     def _backup_to(self, dest_path: Path):
-        """Kopiert die aktuelle DB ueber SQLite's Backup-API nach dest_path."""
+        """Copies current DB via SQLite's backup API to dest_path."""
         target = sqlite3.connect(str(dest_path))
         try:
             if self._shared_conn is not None:
@@ -1638,7 +1638,7 @@ class AgentMemory:
             target.close()
 
     def snapshot(self, label: Optional[str] = None) -> str:
-        """Erstellt einen Snapshot der aktuellen DB. Gibt den Pfad zurueck."""
+        """Creates a snapshot of the current DB. Returns the path."""
         path = self._snapshot_dir / self._snapshot_filename(label)
         self._backup_to(path)
         self._audit(
@@ -1664,10 +1664,10 @@ class AgentMemory:
         return entries
 
     def restore(self, snapshot_path: str) -> None:
-        """Restauriert die DB aus einem Snapshot. Erstellt vorher Auto-Backup."""
+        """Restores DB from a snapshot. Creates auto-backup before restoring."""
         src = Path(snapshot_path)
         if not src.is_file():
-            raise FileNotFoundError(f"Snapshot nicht gefunden: {snapshot_path}")
+            raise FileNotFoundError(f"Snapshot not found: {snapshot_path}")
 
         pre_path = self._snapshot_dir / self._snapshot_filename(
             label=f"pre-restore"
