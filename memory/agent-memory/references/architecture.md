@@ -77,6 +77,27 @@ Authorization memory is intentionally available only through explicit code
 paths. Prompt injection should not be able to turn permission memory into model
 instructions.
 
+## Relation-Aware Plugin Recall (1-hop expansion)
+
+On query turns (when the hook provides a current user message), the plugin can
+inject direct entity relations into prompt context so v3.1 graph edges are
+useful at recall time, not only via CLI.
+
+- **Query-driven:** Known entities are detected by normalized term overlap
+  between the user message and tracked entity names. For each matched entity,
+  direct (1-hop) relations are fetched via `get_relations(..., direction="both")`.
+- **Edge-only:** Only relation edges are injected (e.g.
+  `- Manni --arbeitet_bei--> Arriva`), never facts. Authorization content
+  cannot leak through this path.
+- **Bounded:** Output is clipped by a dedicated `relations` budget (default:
+  6 lines, 1000 characters). Expansion runs from at most 3 matched entities per
+  turn (`RELATIONS_MAX_ENTITIES`).
+- **Opt-out:** Set `AGENT_MEMORY_RELATIONS` to `0`, `false`, `no`, or `off` to
+  disable. Per-lane limits can be overridden with `AGENT_MEMORY_BUDGET_RELATIONS`.
+
+Injected relations appear under a `## Related` section alongside query-retrieved
+evidence on later turns.
+
 ## Smart Retrieval Boundary
 
 The local-first v2.0 work keeps retrieval dependency-free:

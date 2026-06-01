@@ -295,6 +295,94 @@ def test_memory_status_available_shape():
     assert result["error"] is None
 
 
+def test_plugin_injects_related_entities_on_query(mem):
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company")
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni eigentlich?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "## Related" in context
+    assert "Manni" in context
+    assert "Arriva" in context
+    assert "arbeitet_bei" in context
+
+
+def test_plugin_no_relations_without_entity_match(mem):
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company")
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="completely unrelated database question",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is None or "## Related" not in context
+
+
+def test_plugin_relations_opt_out_env(mem, monkeypatch):
+    monkeypatch.setenv("AGENT_MEMORY_RELATIONS", "0")
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company")
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is None or "## Related" not in context
+
+
+def test_plugin_relations_respect_budget_limit(mem):
+    mem.track_entity("Hub", "system")
+    for index in range(8):
+        mem.track_entity(f"Node{index}", "system")
+        mem.relate("Hub", "connects", f"Node{index}")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="tell me about Hub",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "## Related" in context
+    assert context.count("--connects-->") <= 6
+
+
 def test_context_never_contains_error_text(mem):
     mem.remember(
         "Perry is the operator",

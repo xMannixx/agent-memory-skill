@@ -7,6 +7,23 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.2.0] - 2026-06-01 - Relation-Aware Plugin Recall
+
+### Added
+- Relation-aware plugin recall: on query turns, bounded 1-hop expansion of
+  entity relations when the user message mentions known entities (normalized
+  term overlap with entity names). Injected under `## Related` (e.g.
+  `- Manni --arbeitet_bei--> Arriva`).
+- Dedicated `relations` injection budget (default: 6 lines, 1000 characters);
+  expands from at most 3 matched entities per turn.
+- Opt-out via `AGENT_MEMORY_RELATIONS` (`0` / `false` / `no` / `off` to
+  disable). Per-lane override via `AGENT_MEMORY_BUDGET_RELATIONS`.
+
+### Changed
+- Plugin injects relation edges only on this path (never facts), so
+  authorization content cannot leak through relation recall.
+- Test suite: 123 tests (was 119).
+
 ## [3.1.0] - 2026-06-01 - Conflict Detection & Entity Relations
 
 ### Added
@@ -102,6 +119,7 @@ links the issues it closed.
 - Rebound-Protection to cap memory intake after idle phases.
 - Auto-injection plugin for Hermes and a CLI for managing memory.
 
+[3.2.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.2.0
 [3.1.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.1.0
 [3.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/6
 [2.1.0]: https://github.com/xMannixx/agent-memory-skill/milestone/5

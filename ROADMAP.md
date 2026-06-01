@@ -15,6 +15,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v2.1 - Hardening & Polish](https://github.com/xMannixx/agent-memory-skill/milestone/5) | Reliability and publishability: audit-log retention, plugin diagnostics, English code/CLI/prompt standardization. | Complete |
 | [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
 | v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
+| v3.2 - Relation-Aware Recall | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
 
 ## Priority Tiers
 
@@ -85,6 +86,18 @@ Two stdlib-only capabilities shipped without changing the dependency profile:
 2. **Entity relations** — `entity_relations` table and `relate()` / `get_relations()` / `related_entities()` APIs; lifecycle cleanup in `forget_stale_lifecycle()`; `stats()` exposes `relations`.
 
 Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.2 - Relation-Aware Recall
+
+The Hermes auto-injection plugin now performs bounded 1-hop expansion of entity
+relations on query turns: when the user message mentions known entities, their
+direct relations are injected under `## Related` (edges only — no facts, so no
+authorization leak). A dedicated `relations` budget applies (default 6 lines /
+1000 characters); at most 3 matched entities are expanded per turn. Opt out via
+`AGENT_MEMORY_RELATIONS`; override limits with `AGENT_MEMORY_BUDGET_RELATIONS`.
+
+This makes the v3.1 entity graph useful at recall time instead of only through
+the CLI. Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 

@@ -7,6 +7,11 @@ Injected at start of each session:
 - Current preference facts (last 5)
 - Open lessons (last 3 negative)
 
+On query turns, the plugin also performs a bounded 1-hop expansion of entity
+relations: if the user message mentions a known entity, its direct relations
+are injected so the model sees the surrounding context. This is opt-out via
+the AGENT_MEMORY_RELATIONS environment variable.
+
 via pre_llm_call hook — no manual loading needed.
 """
 
@@ -47,7 +52,11 @@ DEFAULT_BUDGETS = {
     "preference": {"limit": 5, "max_chars": 1600},
     "evidence": {"limit": 10, "max_chars": 3000},
     "lessons": {"limit": 3, "max_chars": 1200},
+    "relations": {"limit": 6, "max_chars": 1000},
 }
+
+# How many query-matched entities to expand relations from per turn.
+RELATIONS_MAX_ENTITIES = 3
 
 _QUERY_STOPWORDS = {
     "a",
@@ -118,7 +127,10 @@ def register(ctx):
 
 
 def _budget_for(lane: str, budgets: Dict[str, Dict[str, int]]) -> Dict[str, int]:
-    budget = dict(budgets[lane])
+    base = budgets.get(lane)
+    if base is None:
+        base = DEFAULT_BUDGETS.get(lane, {"limit": 0, "max_chars": 0})
+    budget = dict(base)
     env_limit = os.getenv(f"AGENT_MEMORY_BUDGET_{lane.upper()}")
     if env_limit:
         try:
@@ -193,6 +205,84 @@ def _relevance_score(fact: Any, query_norm_terms: set[str]) -> float:
         for term in _norm_query_terms(content_terms)
     }
     return float(len(query_norm_terms & fact_norm_terms))
+
+
+def _relations_enabled() -> bool:
+    """1-hop relation expansion is on by default; opt out via env var."""
+    value = os.getenv("AGENT_MEMORY_RELATIONS")
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _norm_terms(text: str) -> set:
+    """Normalized term set, falling back to the plugin tokenizer."""
+    if _norm_query_terms is not None and _norm_normalize is not None:
+        return {_norm_normalize(term) for term in _norm_query_terms(text)}
+    return set(_query_terms(text))
+
+
+def _expand_relations(
+    mem: Any,
+    user_message: Optional[str],
+    budgets: Dict[str, Dict[str, int]],
+) -> Optional[str]:
+    """Bounded 1-hop expansion: inject relations of entities named in the query.
+
+    Only relation edges are injected (never facts), so no authorization
+    content can leak through this path. Returns None when disabled, when no
+    known entity is mentioned, or when there is nothing to add.
+    """
+    if not user_message or not _relations_enabled():
+        return None
+    if not hasattr(mem, "list_entities") or not hasattr(mem, "get_relations"):
+        return None
+
+    query_terms = _norm_terms(user_message)
+    if not query_terms:
+        return None
+
+    try:
+        entities = mem.list_entities()
+    except Exception:
+        return None
+    if not entities:
+        return None
+
+    budget = _budget_for("relations", budgets)
+    if budget["limit"] <= 0:
+        return None
+
+    seen = set()
+    lines: List[str] = []
+    matched = 0
+    for entity in entities:
+        name = getattr(entity, "name", None)
+        if not name or not (_norm_terms(name) & query_terms):
+            continue
+        matched += 1
+        try:
+            relations = mem.get_relations(name, direction="both")
+        except Exception:
+            relations = []
+        for relation in relations:
+            line = (
+                f"- {relation.get('from_name')} "
+                f"--{relation.get('predicate')}--> "
+                f"{relation.get('to_name')}"
+            )
+            if line in seen:
+                continue
+            seen.add(line)
+            lines.append(line)
+            if len(lines) >= budget["limit"]:
+                break
+        if matched >= RELATIONS_MAX_ENTITIES or len(lines) >= budget["limit"]:
+            break
+
+    if not lines:
+        return None
+    return _section("## Related", lines, budget["max_chars"])
 
 
 def _rank_relevant_facts(facts: Iterable[Any], query: str) -> List[Any]:
@@ -273,6 +363,12 @@ def build_memory_context(
         section = _section("## Context", lines, evidence_budget["max_chars"])
         if section:
             parts.append(section)
+
+    # 1-hop relation expansion is query-driven (needs a user message).
+    if user_message:
+        related = _expand_relations(mem, user_message, budgets)
+        if related:
+            parts.append(related)
 
     if is_first_turn:
         # Lessons — last 3 negative
