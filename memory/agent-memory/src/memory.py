@@ -31,24 +31,28 @@ _AUTHORITY_POLICY = {
         "half_life_days": None,     # No confidence decay — Identity is Floor
         "min_confidence": 0.9,
         "allowed_sources": ("observation", "conversation"),
+        "single_valued": True,
     },
     "preference": {
         "ttl_days": 14,
         "half_life_days": 7,
         "min_confidence": 0.3,
         "allowed_sources": ("conversation", "observation"),
+        "single_valued": False,
     },
     "evidence": {
         "ttl_days": 60,
         "half_life_days": 30,
         "min_confidence": 0.5,
         "allowed_sources": ("conversation", "observation", "inference"),
+        "single_valued": False,
     },
     "authorization": {
         "ttl_days": 90,
         "half_life_days": 45,
         "min_confidence": 0.9,
         "allowed_sources": ("observation",),  # NOT from conversation
+        "single_valued": True,
     },
 }
 AUTHORITY_POLICY = MappingProxyType({
@@ -236,6 +240,31 @@ class AgentMemory:
         self._migrate_entities_lifecycle(cursor)
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fact_conflicts (
+                id TEXT PRIMARY KEY,
+                lane TEXT NOT NULL,
+                tags TEXT,
+                fact_a TEXT NOT NULL,
+                fact_b TEXT NOT NULL,
+                detected_at TEXT NOT NULL,
+                resolved INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS entity_relations (
+                id TEXT PRIMARY KEY,
+                from_id TEXT NOT NULL,
+                predicate TEXT NOT NULL,
+                to_id TEXT NOT NULL,
+                attributes TEXT,
+                created_at TEXT NOT NULL,
+                last_accessed TEXT,
+                expires_at TEXT
+            )
+        """)
+
+        cursor.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts
             USING fts5(content, tags, tokenize='porter')
         """)
@@ -307,6 +336,12 @@ class AgentMemory:
                 ON lessons(expires_at);
             CREATE INDEX IF NOT EXISTS idx_entities_expires
                 ON entities(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_fact_conflicts_resolved
+                ON fact_conflicts(resolved);
+            CREATE INDEX IF NOT EXISTS idx_entity_relations_from
+                ON entity_relations(from_id);
+            CREATE INDEX IF NOT EXISTS idx_entity_relations_to
+                ON entity_relations(to_id);
             CREATE INDEX IF NOT EXISTS idx_audit_ts
                 ON memory_audit(ts);
             CREATE INDEX IF NOT EXISTS idx_audit_op
@@ -763,6 +798,108 @@ class AgentMemory:
             WHERE id = ?
         """, [(now, expires_at, entity_id) for entity_id in entity_ids])
 
+    def _touch_relation_ids(self, conn, relation_ids: List[str]):
+        if not relation_ids:
+            return
+        now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
+        conn.executemany("""
+            UPDATE entity_relations
+            SET last_accessed = ?,
+                expires_at = ?
+            WHERE id = ?
+        """, [(now, expires_at, relation_id) for relation_id in relation_ids])
+
+    def _get_entity_by_id(self, conn, entity_id: str) -> Optional[Entity]:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT {self._entity_select_columns()} FROM entities WHERE id = ?",
+            (entity_id,)
+        )
+        row = cursor.fetchone()
+        return self._row_to_entity(row) if row else None
+
+    def _entity_ids_for_name(self, conn, name: str) -> List[str]:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id FROM entities WHERE name = ? "
+            "AND (expires_at IS NULL OR expires_at > ?)",
+            (name, self._now())
+        )
+        return [row[0] for row in cursor.fetchall()]
+
+    def _resolve_or_create_entity(self, conn, name: str,
+                                  entity_type: Optional[str]) -> str:
+        cursor = conn.cursor()
+        if entity_type:
+            cursor.execute(
+                "SELECT id FROM entities WHERE name = ? AND entity_type = ?",
+                (name, entity_type)
+            )
+        else:
+            cursor.execute(
+                "SELECT id FROM entities WHERE name = ? ORDER BY last_updated DESC",
+                (name,)
+            )
+
+        row = cursor.fetchone()
+        if row:
+            self._touch_entity_ids(conn, [row[0]])
+            return row[0]
+
+        entity_type = entity_type or "entity"
+        entity_id = self._generate_id(f"{entity_type}:{name}")
+        now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
+        cursor.execute("""
+            INSERT INTO entities (id, name, entity_type, attributes,
+                                 first_seen, last_updated, last_accessed,
+                                 expires_at, fact_ids)
+            VALUES (?, ?, ?, '{}', ?, ?, ?, ?, '[]')
+        """, (entity_id, name, entity_type, now, now, now, expires_at))
+        return entity_id
+
+    def _detect_conflicts(self, conn, fact_id: str,
+                          authority_class: str, tags: List[str]):
+        if not tags:
+            return
+
+        sorted_tags = sorted(set(tags))
+        tag_set = set(sorted_tags)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, tags FROM facts
+            WHERE authority_class = ?
+            AND superseded_by IS NULL
+            AND id != ?
+            AND (expires_at IS NULL OR expires_at > ?)
+        """, (authority_class, fact_id, self._now()))
+
+        for other_id, stored_tags in cursor.fetchall():
+            other_tags = set(json.loads(stored_tags or "[]"))
+            if other_tags != tag_set:
+                continue
+            conflict_id = self._generate_id(
+                "|".join(sorted([fact_id, other_id])),
+                authority_class="conflict",
+            )
+            cursor.execute("""
+                INSERT OR IGNORE INTO fact_conflicts (
+                    id, lane, tags, fact_a, fact_b, detected_at, resolved
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0)
+            """, (
+                conflict_id, authority_class, json.dumps(sorted_tags),
+                fact_id, other_id, self._now()
+            ))
+            self._audit(
+                "conflict_detected",
+                fact_id=fact_id,
+                authority_class=authority_class,
+                metadata={"other_id": other_id, "tags": sorted_tags},
+                conn=conn,
+            )
+
     # ==================== FACTS ====================
 
     def remember(self, content: str, tags: List[str] = None,
@@ -873,6 +1010,11 @@ class AgentMemory:
             conn=conn,
         )
 
+        if policy.get("single_valued"):
+            # Consolidation may still collapse same lane/tag groups later; conflicts
+            # provide write-time visibility plus an explicit resolution path.
+            self._detect_conflicts(conn, fact_id, authority_class, tags)
+
         conn.commit()
         if should_close:
             conn.close()
@@ -930,6 +1072,108 @@ class AgentMemory:
             if should_close:
                 conn.close()
             self._record_recall((time.perf_counter() - started_at) * 1000)
+
+    def get_conflicts(self, include_resolved: bool = False) -> List[Dict[str, Any]]:
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+
+        sql = """
+            SELECT id, lane, tags, fact_a, fact_b, detected_at, resolved
+            FROM fact_conflicts
+            WHERE 1=1
+        """
+        if not include_resolved:
+            sql += " AND resolved = 0"
+        sql += " ORDER BY detected_at DESC, id DESC"
+
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+
+        fact_ids = sorted({row[3] for row in rows} | {row[4] for row in rows})
+        facts: Dict[str, Dict[str, Any]] = {}
+        if fact_ids:
+            placeholders = ",".join("?" for _ in fact_ids)
+            cursor.execute(
+                "SELECT id, content, authority_class FROM facts "
+                f"WHERE id IN ({placeholders})",
+                fact_ids,
+            )
+            facts = {
+                row[0]: {
+                    "id": row[0],
+                    "content": row[1],
+                    "authority_class": row[2],
+                }
+                for row in cursor.fetchall()
+            }
+
+        if should_close:
+            conn.close()
+
+        def fact_ref(fact_id: str) -> Dict[str, Any]:
+            return facts.get(fact_id, {
+                "id": fact_id,
+                "content": None,
+                "authority_class": None,
+            })
+
+        return [
+            {
+                "id": row[0],
+                "lane": row[1],
+                "tags": json.loads(row[2] or "[]"),
+                "fact_a": fact_ref(row[3]),
+                "fact_b": fact_ref(row[4]),
+                "detected_at": row[5],
+                "resolved": bool(row[6]),
+            }
+            for row in rows
+        ]
+
+    def resolve_conflict(self, keep_id: str,
+                         drop_ids: List[str]) -> Dict[str, Any]:
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        marked_resolved = 0
+        dropped = []
+
+        for drop_id in drop_ids:
+            cursor.execute(
+                "UPDATE facts SET superseded_by = ? WHERE id = ?",
+                (keep_id, drop_id)
+            )
+            dropped.append(drop_id)
+            drop_exists = cursor.rowcount > 0
+            cursor.execute("""
+                UPDATE fact_conflicts
+                SET resolved = 1
+                WHERE resolved = 0
+                AND (
+                    (fact_a = ? AND fact_b = ?)
+                    OR (fact_a = ? AND fact_b = ?)
+                )
+            """, (keep_id, drop_id, drop_id, keep_id))
+            marked_resolved += cursor.rowcount
+            self._audit(
+                "conflict_resolved",
+                fact_id=keep_id,
+                metadata={
+                    "keep_id": keep_id,
+                    "drop_id": drop_id,
+                    "drop_exists": drop_exists,
+                },
+                conn=conn,
+            )
+
+        conn.commit()
+        if should_close:
+            conn.close()
+
+        return {
+            "kept": keep_id,
+            "dropped": dropped,
+            "marked_resolved": marked_resolved,
+        }
 
     def recall_by_authority(self, authority_class: str, limit: int = 50) -> List[Fact]:
         started_at = time.perf_counter()
@@ -1460,6 +1704,143 @@ class AgentMemory:
         if should_close:
             conn.close()
 
+    def relate(self, from_name: str, predicate: str, to_name: str,
+               from_type: str = None, to_type: str = None,
+               attributes: Dict[str, Any] = None) -> str:
+        attributes = attributes or {}
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+
+        from_id = self._resolve_or_create_entity(conn, from_name, from_type)
+        to_id = self._resolve_or_create_entity(conn, to_name, to_type)
+        relation_id = self._generate_id(
+            f"{from_id}|{predicate}|{to_id}",
+            authority_class="relation",
+        )
+        now = self._now()
+        expires_at = self._expires_at_for_days(ENTITY_TTL_DAYS)
+
+        cursor.execute(
+            "SELECT attributes FROM entity_relations WHERE id = ?",
+            (relation_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            merged_attributes = json.loads(row[0] or "{}")
+            merged_attributes.update(attributes)
+            cursor.execute("""
+                UPDATE entity_relations
+                SET attributes = ?, last_accessed = ?, expires_at = ?
+                WHERE id = ?
+            """, (json.dumps(merged_attributes), now, expires_at, relation_id))
+        else:
+            cursor.execute("""
+                INSERT INTO entity_relations (
+                    id, from_id, predicate, to_id, attributes,
+                    created_at, last_accessed, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                relation_id, from_id, predicate, to_id, json.dumps(attributes),
+                now, now, expires_at
+            ))
+
+        conn.commit()
+        if should_close:
+            conn.close()
+        return relation_id
+
+    def get_relations(self, name: str, direction: str = "both",
+                      predicate: str = None) -> List[Dict[str, Any]]:
+        if direction not in ("out", "in", "both"):
+            raise ValueError("direction must be one of: out, in, both")
+
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        entity_ids = self._entity_ids_for_name(conn, name)
+        if not entity_ids:
+            if should_close:
+                conn.close()
+            return []
+
+        placeholders = ",".join("?" for _ in entity_ids)
+        params: List[Any] = []
+        clauses = []
+        if direction in ("out", "both"):
+            clauses.append(f"r.from_id IN ({placeholders})")
+            params.extend(entity_ids)
+        if direction in ("in", "both"):
+            clauses.append(f"r.to_id IN ({placeholders})")
+            params.extend(entity_ids)
+
+        sql = f"""
+            SELECT r.id, r.from_id, r.predicate, r.to_id, r.attributes,
+                   from_e.name, from_e.entity_type, to_e.name, to_e.entity_type
+            FROM entity_relations r
+            JOIN entities from_e ON from_e.id = r.from_id
+            JOIN entities to_e ON to_e.id = r.to_id
+            WHERE ({' OR '.join(clauses)})
+            AND (r.expires_at IS NULL OR r.expires_at > ?)
+        """
+        params.append(self._now())
+        if predicate:
+            sql += " AND r.predicate = ?"
+            params.append(predicate)
+        sql += " ORDER BY r.last_accessed DESC, r.created_at DESC"
+
+        cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        self._touch_relation_ids(conn, [row[0] for row in rows])
+        self._touch_entity_ids(
+            conn,
+            sorted({row[1] for row in rows} | {row[3] for row in rows})
+        )
+        conn.commit()
+        if should_close:
+            conn.close()
+
+        return [
+            {
+                "id": row[0],
+                "from_id": row[1],
+                "from_name": row[5],
+                "from_type": row[6],
+                "predicate": row[2],
+                "to_id": row[3],
+                "to_name": row[7],
+                "to_type": row[8],
+                "attributes": json.loads(row[4] or "{}"),
+            }
+            for row in rows
+        ]
+
+    def related_entities(self, name: str, predicate: str = None,
+                         direction: str = "both") -> List[Entity]:
+        relations = self.get_relations(
+            name,
+            direction=direction,
+            predicate=predicate,
+        )
+        conn, should_close = self._connect()
+        seen = set()
+        entities = []
+        try:
+            for relation in relations:
+                if relation["from_name"] == name:
+                    neighbor_id = relation["to_id"]
+                else:
+                    neighbor_id = relation["from_id"]
+                if neighbor_id in seen:
+                    continue
+                neighbor = self._get_entity_by_id(conn, neighbor_id)
+                if neighbor:
+                    seen.add(neighbor_id)
+                    entities.append(neighbor)
+        finally:
+            if should_close:
+                conn.close()
+        return entities
+
     def list_entities(self, entity_type: str = None) -> List[Entity]:
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -1513,10 +1894,51 @@ class AgentMemory:
                 conn=conn,
             )
 
+        cursor.execute("""
+            DELETE FROM entity_relations
+            WHERE expires_at IS NOT NULL
+            AND expires_at < ?
+        """, (self._now(),))
+        deleted["relations"] = cursor.rowcount
+        if deleted["relations"]:
+            self._audit(
+                "forget_stale_lifecycle",
+                metadata={"type": "relations", "removed": deleted["relations"]},
+                conn=conn,
+            )
+
+        deleted["orphan_relations"] = self._prune_orphan_relations(conn=conn)
+
         conn.commit()
         if should_close:
             conn.close()
         return deleted
+
+    def _prune_orphan_relations(self, conn=None) -> int:
+        own_conn = conn is None
+        if own_conn:
+            conn, should_close = self._connect()
+        else:
+            should_close = False
+
+        cursor = conn.cursor()
+        cursor.execute("""
+            DELETE FROM entity_relations
+            WHERE from_id NOT IN (SELECT id FROM entities)
+            OR to_id NOT IN (SELECT id FROM entities)
+        """)
+        removed = cursor.rowcount
+        if removed:
+            self._audit(
+                "forget_stale_lifecycle",
+                metadata={"type": "orphan_relations", "removed": removed},
+                conn=conn,
+            )
+        if own_conn:
+            conn.commit()
+            if should_close:
+                conn.close()
+        return removed
 
     # ==================== UTILITIES ====================
 
@@ -1535,6 +1957,12 @@ class AgentMemory:
 
         cursor.execute("SELECT COUNT(*) FROM entities")
         entities = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM entity_relations")
+        relations = cursor.fetchone()[0]
+
+        cursor.execute("SELECT COUNT(*) FROM fact_conflicts WHERE resolved = 0")
+        open_conflicts = cursor.fetchone()[0]
 
         cursor.execute("SELECT COUNT(*) FROM memory_audit")
         audit_rows = cursor.fetchone()[0]
@@ -1570,6 +1998,8 @@ class AgentMemory:
             "by_class_ratio": by_class_ratio,
             "lessons": lessons,
             "entities": entities,
+            "relations": relations,
+            "open_conflicts": open_conflicts,
             "audit_rows": audit_rows,
             "stale_facts": stale_facts,
             "stale_ratio": stale_facts / active if active else 0.0,

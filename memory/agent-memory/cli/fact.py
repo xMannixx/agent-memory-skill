@@ -54,6 +54,37 @@ def main():
     # stats
     subparsers.add_parser("stats", help="Statistics")
 
+    # relate
+    relate_p = subparsers.add_parser("relate", help="Create entity relation")
+    relate_p.add_argument("from_name", help="Source entity name")
+    relate_p.add_argument("predicate", help="Relation predicate")
+    relate_p.add_argument("to_name", help="Target entity name")
+    relate_p.add_argument("--from-type", help="Source entity type")
+    relate_p.add_argument("--to-type", help="Target entity type")
+
+    # relations
+    relations_p = subparsers.add_parser("relations", help="List entity relations")
+    relations_p.add_argument("name", help="Entity name")
+    relations_p.add_argument("--predicate", help="Filter by predicate")
+    relations_p.add_argument(
+        "--direction",
+        choices=["out", "in", "both"],
+        default="both",
+        help="Relation direction"
+    )
+
+    # conflicts
+    conflicts_p = subparsers.add_parser("conflicts", help="List fact conflicts")
+    conflicts_p.add_argument("--all", action="store_true", help="Include resolved")
+
+    # resolve-conflict
+    resolve_p = subparsers.add_parser(
+        "resolve-conflict",
+        help="Resolve fact conflict"
+    )
+    resolve_p.add_argument("keep_id", help="Fact ID to keep")
+    resolve_p.add_argument("drop_ids", nargs="+", help="Fact IDs to supersede")
+
     # learn
     learn_p = subparsers.add_parser("learn", help="Save lesson")
     learn_p.add_argument("action")
@@ -179,6 +210,8 @@ def main():
         print(f"Superseded:       {s['superseded_facts']}")
         print(f"Lessons:          {s['lessons']}")
         print(f"Entities:         {s['entities']}")
+        print(f"Relations:        {s['relations']}")
+        print(f"Open Conflicts:   {s['open_conflicts']}")
         print(f"Audit rows:       {s['audit_rows']}")
         print(f"Rebound active:   {s['rebound_active']}")
         print(f"Rebound remaining: {s['rebound_remaining']}")
@@ -204,6 +237,60 @@ def main():
         for cls, count in s.get("by_class", {}).items():
             ratio = s.get("by_class_ratio", {}).get(cls, 0.0)
             print(f"  {cls}: {count} ({ratio:.1%})")
+
+    elif args.command == "relate":
+        relation_id = mem.relate(
+            args.from_name,
+            args.predicate,
+            args.to_name,
+            from_type=args.from_type,
+            to_type=args.to_type,
+        )
+        print(
+            f"OK [{relation_id}] "
+            f"{args.from_name} --{args.predicate}--> {args.to_name}"
+        )
+
+    elif args.command == "relations":
+        relations = mem.get_relations(
+            args.name,
+            direction=args.direction,
+            predicate=args.predicate,
+        )
+        if not relations:
+            print("No relations found.")
+        for rel in relations:
+            attrs = f" {rel['attributes']}" if rel["attributes"] else ""
+            print(
+                f"[{rel['id']}] "
+                f"{rel['from_name']} ({rel['from_type']}) "
+                f"--{rel['predicate']}--> "
+                f"{rel['to_name']} ({rel['to_type']}){attrs}"
+            )
+
+    elif args.command == "conflicts":
+        conflicts = mem.get_conflicts(include_resolved=args.all)
+        if not conflicts:
+            print("No conflicts found.")
+        for conflict in conflicts:
+            status = "resolved" if conflict["resolved"] else "open"
+            tags = ",".join(conflict["tags"]) or "-"
+            a = conflict["fact_a"]
+            b = conflict["fact_b"]
+            print(
+                f"[{conflict['id']}] {status} "
+                f"{conflict['lane']} tags={tags}"
+            )
+            print(f"  A [{a['id']}]: {a['content']}")
+            print(f"  B [{b['id']}]: {b['content']}")
+
+    elif args.command == "resolve-conflict":
+        result = mem.resolve_conflict(args.keep_id, args.drop_ids)
+        print(
+            f"OK kept {result['kept']}; "
+            f"dropped {', '.join(result['dropped'])}; "
+            f"resolved {result['marked_resolved']} conflict(s)"
+        )
 
     elif args.command == "learn":
         lid = mem.learn(args.action, args.context, args.outcome, args.insight)

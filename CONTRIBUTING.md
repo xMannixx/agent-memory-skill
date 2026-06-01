@@ -34,7 +34,7 @@ pip install -r requirements-dev.txt
 python -m pytest memory/agent-memory/tests -q
 ```
 
-The full suite should pass (currently 106 tests). When you touch retrieval,
+The full suite should pass (currently 119 tests). When you touch retrieval,
 also confirm the eval harness:
 
 ```bash

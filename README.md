@@ -33,8 +33,10 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
 - **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
 - **German-aware retrieval** — token-prefix FTS5 + synonym map, with fold/stem relevance scoring (deterministic, no embeddings)
-- **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, and recall latency counters
-- **CLI** — manage facts, snippets, lessons, entities, snapshots, and consolidation from the terminal
+- **Conflict detection** — non-blocking detection of contradictory facts in single-valued lanes (`identity`, `authorization`) with explicit resolution
+- **Entity relations** — lightweight directed graph between entities (no embeddings), with lifecycle cleanup
+- **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, open-conflict and relation counts, and recall latency counters
+- **CLI** — manage facts, snippets, lessons, entities, relations, conflicts, snapshots, and consolidation from the terminal
 - **systemd timer** — daily cleanup of stale facts
 
 ---
@@ -108,7 +110,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 106 passed
+# Expected: 119 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -161,6 +163,17 @@ mem.learn(
 # Track an entity
 mem.track_entity("Manni", "person", {"username": "xMannixx", "language": "de"})
 
+# Entity relations (lightweight graph)
+mem.relate("Manni", "arbeitet_bei", "arriva", from_type="person", to_type="org")
+mem.get_relations("Manni", direction="out")
+neighbors = mem.related_entities("Manni", predicate="arbeitet_bei")
+
+# Conflict detection (single-valued lanes; tag the subject)
+mem.remember("User role is admin", authority_class="identity",
+             source="observation", confidence=1.0, tags=["user", "role"])
+open_conflicts = mem.get_conflicts()
+# mem.resolve_conflict(keep_id, [drop_id, ...])
+
 # Store raw conversation recall separately from facts
 mem.remember_snippet(
     "Raw conversation detail before it is distilled into a fact",
@@ -197,6 +210,15 @@ python3 $CLI stats
 # Raw recall snippets
 python3 $CLI snippet add "Discussed local-first retrieval design" --session demo
 python3 $CLI snippet search retrieval --session demo
+
+# Entity relations
+python3 $CLI relate Manni arbeitet_bei arriva --from-type person --to-type org
+python3 $CLI relations Manni --direction out --predicate arbeitet_bei
+
+# Conflicts (single-valued lanes)
+python3 $CLI conflicts
+python3 $CLI conflicts --all
+python3 $CLI resolve-conflict <keep_id> <drop_id> [drop_id ...]
 
 # Audit, snapshots, and consolidation
 python3 $CLI audit --limit 10
@@ -276,7 +298,7 @@ agent-memory-skill/
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.0)
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.1)
 - [ROADMAP.md](ROADMAP.md) — milestones and planned work
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model

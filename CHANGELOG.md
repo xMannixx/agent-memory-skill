@@ -7,6 +7,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.1.0] - 2026-06-01 - Conflict Detection & Entity Relations
+
+### Added
+- Conflict detection on single-valued authority lanes (`identity`, `authorization`):
+  non-blocking checks on `remember()` when tags are present; `fact_conflicts`
+  table; audit events `conflict_detected` and `conflict_resolved`.
+- `get_conflicts(include_resolved=False)` and `resolve_conflict(keep_id, drop_ids)`.
+- Entity relation graph: `entity_relations` table; `relate()`, `get_relations()`,
+  and `related_entities()` (idempotent edges, auto-create entities).
+- CLI: `relate`, `relations`, `conflicts` (`--all`), `resolve-conflict`.
+
+### Changed
+- `stats()` now includes `open_conflicts` and `relations`.
+- `forget_stale_lifecycle()` prunes expired and orphan entity relations.
+- CLI `stats` output shows Open Conflicts and Relations.
+
 ## [3.0.0] - 2026-06-01 - German-Aware Retrieval
 
 ### Added
@@ -86,6 +102,7 @@ links the issues it closed.
 - Rebound-Protection to cap memory intake after idle phases.
 - Auto-injection plugin for Hermes and a CLI for managing memory.
 
+[3.1.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.1.0
 [3.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/6
 [2.1.0]: https://github.com/xMannixx/agent-memory-skill/milestone/5
 [2.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/4

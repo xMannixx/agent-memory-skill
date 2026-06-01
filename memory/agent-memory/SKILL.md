@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
-version: 3.0.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.1.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -22,6 +22,8 @@ Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Source-Trust hierarchy
 - Raw recall snippets kept separate from semantic facts
 - Auto-injection plugin with per-lane budgets and German-aware, score-ranked query retrieval (token-prefix FTS + synonyms, deterministic, no embeddings)
+- Conflict detection on single-valued lanes (`identity`, `authorization`) with explicit resolution
+- Entity relations: lightweight directed graph between entities (stdlib-only, no embeddings)
 
 ## When to Use
 
@@ -78,7 +80,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 106 passed
+# Expected: 119 passed
 ```
 
 ## Authority Lanes
@@ -133,6 +135,14 @@ mem.learn(action="Deployed without fallback",
 # Track an entity
 mem.track_entity("Manni", "person", {"username": "xPerryx", "language": "de"})
 
+# Entity relations
+mem.relate("Manni", "arbeitet_bei", "arriva")
+mem.get_relations("Manni", direction="both")
+
+# Conflicts (tag single-valued lane facts)
+mem.get_conflicts()
+# mem.resolve_conflict(keep_id, [drop_id])
+
 # Store raw recall separately from facts
 mem.remember_snippet("Discussed query-aware retrieval", session_id="demo")
 snippets = mem.search_snippets("query-aware", session_id="demo")
@@ -176,6 +186,12 @@ $PYTHON $CLI forget-stale
 
 # Record lesson
 $PYTHON $CLI learn "Action" "Context" positive "Insight"
+
+# Relations and conflicts
+$PYTHON $CLI relate Manni arbeitet_bei arriva
+$PYTHON $CLI relations Manni --direction out
+$PYTHON $CLI conflicts
+$PYTHON $CLI resolve-conflict <keep_id> <drop_id>
 ```
 
 ## Auto-Injection via Plugin

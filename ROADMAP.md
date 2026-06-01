@@ -14,6 +14,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | Local-first retrieval shipped; only hybrid vector search (#5) remains |
 | [v2.1 - Hardening & Polish](https://github.com/xMannixx/agent-memory-skill/milestone/5) | Reliability and publishability: audit-log retention, plugin diagnostics, English code/CLI/prompt standardization. | Complete |
 | [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
+| v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
 
 ## Priority Tiers
 
@@ -75,6 +76,15 @@ A reliability and publishability pass. Audit logging gained a retention window a
 ### v3.0 - German-Aware Retrieval
 
 Retrieval became German-aware while staying fully deterministic and local (no embeddings, no LLM calls). The FTS query is built from unquoted token-prefix terms plus a synonym map, so `Server` matches `Serverkonfiguration` and `wie laeuft die Infrastruktur` reaches the VPS/Nginx fact. A lightweight, attribution-free German stemmer and umlaut folding (ae/oe/ue/ss) drive relevance scoring. The plugin replaced its binary relevance gate with a score-based ranking that no longer drops good BM25 hits. A self-contained eval harness (positives + hard negatives + regressions) makes every retrieval change measurable.
+
+### v3.1 - Conflict & Relations
+
+Two stdlib-only capabilities shipped without changing the dependency profile:
+
+1. **Conflict detection** — `single_valued` policy on authority lanes; on `remember()`, detect active facts in the same lane with identical tags but different content; record in `fact_conflicts`, audit `conflict_detected`, resolve via `get_conflicts()` / `resolve_conflict()`; `stats()` exposes `open_conflicts`. Non-blocking at write time; complements automatic `consolidate()` for same-(lane, tags) groups.
+2. **Entity relations** — `entity_relations` table and `relate()` / `get_relations()` / `related_entities()` APIs; lifecycle cleanup in `forget_stale_lifecycle()`; `stats()` exposes `relations`.
+
+Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 

@@ -114,3 +114,52 @@ the only hard cut. A self-contained eval harness
 (`tests/test_retrieval_eval.py` + `fixtures/retrieval_eval.json`) guards this
 with recall@3 on positives, a precision check on hard negatives, and strict
 regression cases (the queries that failed before v3.0).
+
+## Conflict Detection (single-valued lanes)
+
+Some authority lanes represent at most one active truth per subject. The policy
+flag `single_valued` marks this: `identity` and `authorization` are
+single-valued; `preference` and `evidence` are not.
+
+On `remember()`, when a new fact is written to a single-valued lane with a
+non-empty tag set, the system looks for existing active facts in the same lane
+with an identical tag set but different content. Each such pair is recorded in
+`fact_conflicts` and an audit event `conflict_detected` is written. Detection is
+non-blocking — the new fact is still stored.
+
+Conflict scope is `(lane, set of tags)`. Untagged facts are not scoped for
+conflicts; tag the subject so contradictions can be found.
+
+Resolution API: `get_conflicts(include_resolved=False)` lists open (or all)
+conflicts with both facts resolved; `resolve_conflict(keep_id, drop_ids)`
+supersedes the losing facts and marks the conflict resolved, auditing
+`conflict_resolved`. `stats()` includes `open_conflicts`.
+
+**Design rationale:** Deterministic, no NLP or embeddings. Lane-scoped matching
+avoids noise from unrelated facts. Non-blocking writes keep the hot path simple;
+operators get visibility at write time plus an explicit resolution path.
+
+**Interaction with `consolidate()`:** `consolidate()` still auto-collapses
+same-(lane, tags) groups into one representative fact. Conflict detection adds
+write-time visibility and manual resolution; consolidate remains the automatic
+path. Both can apply to the same subject — not surprising if documented.
+
+## Entity Relations
+
+A lightweight entity graph without embeddings: directed edges between tracked
+entities, e.g. `Manni -arbeitet_bei-> arriva`, stored in `entity_relations`.
+
+API:
+- `relate(from_name, predicate, to_name, ...)` — idempotent (same triple = one
+  edge); auto-creates missing entities.
+- `get_relations(name, direction="both", predicate=None)` — `direction` is
+  `out`, `in`, or `both`.
+- `related_entities(name, predicate=None, direction="both")` — neighbor
+  `Entity` objects.
+
+`forget_stale_lifecycle()` also removes expired relations and prunes orphan
+edges whose endpoints no longer exist. `stats()` includes `relations`.
+
+**Design rationale:** Stdlib-only, deterministic graph edges for structured
+context (who works where, what owns what) without vector search or NLP parsing.
+Complements facts and entities; retrieval stays explicit via name and predicate.

@@ -493,6 +493,227 @@ def test_update_entity_returns_updated_entity_without_extra_lookup(mem):
     assert updated.attributes == {"role": "assistant", "memory": "sqlite"}
 
 
+def test_single_valued_lane_records_conflict_for_same_tags(mem):
+    first = mem.remember(
+        "Project owner is Perry",
+        tags=["project"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    second = mem.remember(
+        "Project owner is Lena",
+        tags=["project"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    conflicts = mem.get_conflicts()
+    active = mem.list_facts(tags=["project"], authority_class="identity")
+
+    assert first is not None
+    assert second is not None
+    assert len(conflicts) == 1
+    assert conflicts[0]["lane"] == "identity"
+    assert conflicts[0]["tags"] == ["project"]
+    assert {conflicts[0]["fact_a"]["id"], conflicts[0]["fact_b"]["id"]} == {
+        first,
+        second,
+    }
+    assert len(active) == 2
+    assert all(f.superseded_by is None for f in active)
+
+
+def test_evidence_lane_does_not_record_conflict(mem):
+    mem.remember(
+        "Deployment target is staging",
+        tags=["deploy"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    mem.remember(
+        "Deployment target is production",
+        tags=["deploy"],
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    assert mem.get_conflicts() == []
+
+
+def test_single_valued_different_tag_sets_do_not_conflict(mem):
+    mem.remember(
+        "Owner is Perry",
+        tags=["project", "alpha"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    mem.remember(
+        "Owner is Lena",
+        tags=["project"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    assert mem.get_conflicts() == []
+
+
+def test_identical_content_update_path_does_not_conflict(mem):
+    first = mem.remember(
+        "Primary user is Perry",
+        tags=["user"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    second = mem.remember(
+        "Primary user is Perry",
+        tags=["user"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    assert second == first
+    assert mem.get_conflicts() == []
+
+
+def test_untagged_single_valued_facts_do_not_conflict(mem):
+    mem.remember(
+        "Default owner is Perry",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    mem.remember(
+        "Default owner is Lena",
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    assert mem.get_conflicts() == []
+
+
+def test_resolve_conflict_supersedes_drop_and_marks_resolved(mem):
+    keep = mem.remember(
+        "Workspace owner is Perry",
+        tags=["workspace"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    drop = mem.remember(
+        "Workspace owner is Lena",
+        tags=["workspace"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+
+    result = mem.resolve_conflict(keep, [drop])
+    dropped_fact = mem.get_fact(drop)
+    resolved = mem.get_conflicts(include_resolved=True)
+
+    assert result == {"kept": keep, "dropped": [drop], "marked_resolved": 1}
+    assert dropped_fact.superseded_by == keep
+    assert mem.get_conflicts() == []
+    assert len(resolved) == 1
+    assert resolved[0]["resolved"] is True
+
+
+def test_stats_tracks_open_conflicts(mem):
+    assert mem.stats()["open_conflicts"] == 0
+    keep = mem.remember(
+        "Current approver is Perry",
+        tags=["approver"],
+        authority_class="authorization",
+        source="observation",
+        confidence=1.0,
+    )
+    drop = mem.remember(
+        "Current approver is Lena",
+        tags=["approver"],
+        authority_class="authorization",
+        source="observation",
+        confidence=1.0,
+    )
+
+    assert mem.stats()["open_conflicts"] == 1
+    mem.resolve_conflict(keep, [drop])
+    assert mem.stats()["open_conflicts"] == 0
+
+
+def test_relate_is_idempotent_and_merges_attributes(mem):
+    first = mem.relate(
+        "Perry",
+        "owns",
+        "Hermes",
+        from_type="person",
+        to_type="agent",
+        attributes={"since": "today"},
+    )
+    second = mem.relate(
+        "Perry",
+        "owns",
+        "Hermes",
+        from_type="person",
+        to_type="agent",
+        attributes={"source": "test"},
+    )
+    relations = mem.get_relations("Perry", direction="out")
+
+    assert second == first
+    assert len(relations) == 1
+    assert relations[0]["attributes"] == {"since": "today", "source": "test"}
+
+
+def test_get_relations_direction_and_predicate_filters(mem):
+    mem.relate("Perry", "owns", "Hermes", from_type="person", to_type="agent")
+    mem.relate("Hermes", "assists", "Perry", from_type="agent", to_type="person")
+    mem.relate("Lena", "owns", "Hermes", from_type="person", to_type="agent")
+
+    outgoing = mem.get_relations("Perry", direction="out")
+    incoming = mem.get_relations("Perry", direction="in")
+    both_owns = mem.get_relations("Hermes", direction="both", predicate="owns")
+
+    assert [(r["from_name"], r["predicate"], r["to_name"]) for r in outgoing] == [
+        ("Perry", "owns", "Hermes")
+    ]
+    assert [(r["from_name"], r["predicate"], r["to_name"]) for r in incoming] == [
+        ("Hermes", "assists", "Perry")
+    ]
+    assert {
+        (r["from_name"], r["predicate"], r["to_name"]) for r in both_owns
+    } == {
+        ("Perry", "owns", "Hermes"),
+        ("Lena", "owns", "Hermes"),
+    }
+
+
+def test_related_entities_returns_neighbors(mem):
+    mem.relate("Perry", "owns", "Hermes", from_type="person", to_type="agent")
+
+    neighbors = mem.related_entities("Perry", predicate="owns", direction="out")
+
+    assert len(neighbors) == 1
+    assert neighbors[0].name == "Hermes"
+    assert neighbors[0].entity_type == "agent"
+
+
+def test_stats_tracks_relations(mem):
+    assert mem.stats()["relations"] == 0
+
+    mem.relate("Perry", "owns", "Hermes", from_type="person", to_type="agent")
+
+    assert mem.stats()["relations"] == 1
+
+
 def test_authority_policy_is_immutable():
     """Authority Policy ist gegen versehentliche Laufzeitmutation geschuetzt."""
     assert isinstance(AUTHORITY_POLICY, MappingProxyType)
@@ -674,8 +895,59 @@ def test_lifecycle_cleanup_audits_removed_counts(mem):
     deleted = mem.forget_stale_lifecycle()
     audit = mem.get_audit(op="forget_stale_lifecycle", limit=10)
 
-    assert deleted == {"lessons": 1, "entities": 1}
+    assert deleted == {
+        "lessons": 1,
+        "entities": 1,
+        "relations": 0,
+        "orphan_relations": 0,
+    }
     assert {e["metadata"]["type"] for e in audit} == {"lessons", "entities"}
+
+
+def test_stale_lifecycle_removes_expired_relation(mem):
+    """Expired Relations werden vom Lifecycle-Cleanup entfernt."""
+    relation_id = mem.relate(
+        "Perry",
+        "owns",
+        "Hermes",
+        from_type="person",
+        to_type="agent",
+    )
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE entity_relations SET expires_at = ? WHERE id = ?",
+        ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(), relation_id)
+    )
+    conn.commit()
+
+    deleted = mem.forget_stale_lifecycle()
+
+    assert deleted["relations"] == 1
+    assert mem.get_relations("Perry") == []
+
+
+def test_stale_lifecycle_prunes_orphan_relation(mem):
+    """Relations zu geloeschten Entities werden bereinigt."""
+    relation_id = mem.relate(
+        "Perry",
+        "owns",
+        "Hermes",
+        from_type="person",
+        to_type="agent",
+    )
+    entity = mem.get_entity("Hermes", "agent")
+    conn = mem._shared_conn
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM entities WHERE id = ?", (entity.id,))
+    conn.commit()
+
+    deleted = mem.forget_stale_lifecycle()
+    cursor.execute("SELECT COUNT(*) FROM entity_relations WHERE id = ?", (relation_id,))
+    remaining = cursor.fetchone()[0]
+
+    assert deleted["orphan_relations"] == 1
+    assert remaining == 0
 
 
 # ==================== TEST 7: Schema-Indexe und WAL ====================
