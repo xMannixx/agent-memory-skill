@@ -11,7 +11,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v1.2 - Stability & Hygiene](https://github.com/xMannixx/agent-memory-skill/milestone/1) | Make the current SQLite memory core predictable, indexed, testable, and easier to maintain. | Complete |
 | [v1.3 - Audit & Recovery](https://github.com/xMannixx/agent-memory-skill/milestone/2) | Add auditability, rollback, anomaly detection, and operational stats. | Complete |
 | [v1.4 - Consolidation & Decay](https://github.com/xMannixx/agent-memory-skill/milestone/3) | Move from simple retention windows toward consolidation and confidence decay. | Complete |
-| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, hybrid search, smarter plugin injection. | Local-first retrieval shipped; only hybrid vector search (#5) remains |
+| [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, smarter plugin injection. | Complete |
 | [v2.1 - Hardening & Polish](https://github.com/xMannixx/agent-memory-skill/milestone/5) | Reliability and publishability: audit-log retention, plugin diagnostics, English code/CLI/prompt standardization. | Complete |
 | [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
 | v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
@@ -33,7 +33,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 |---|-------|-----------|------|------|--------|
 | 1 | [#3 `feat(core): introduce recall lane for raw conversation snippets`](https://github.com/xMannixx/agent-memory-skill/issues/3) | v2.0 | `tier:exploratory` | `area:core`, `area:schema` | Closed |
 | 2 | [#4 `feat(cli): consolidate command to merge related facts`](https://github.com/xMannixx/agent-memory-skill/issues/4) | v1.4 | `tier:high-value` | `area:core`, `area:cli` | Closed |
-| 3 | [#5 `feat(search): hybrid FTS5 + sqlite-vec retrieval with RRF`](https://github.com/xMannixx/agent-memory-skill/issues/5) | v2.0 | `tier:exploratory` | `area:search` | Open |
+| 3 | [#5 `feat(search): hybrid FTS5 + sqlite-vec retrieval with RRF`](https://github.com/xMannixx/agent-memory-skill/issues/5) | v2.0 | `tier:exploratory` | `area:search` | Closed (not planned) |
 | 4 | [#6 `feat(security): audit log, snapshots and rapid-change anomaly detection`](https://github.com/xMannixx/agent-memory-skill/issues/6) | v1.3 | `tier:must-do` | `area:security`, `area:schema` | Closed |
 | 5 | [#7 `feat(plugin): query-aware retrieval at second turn onward`](https://github.com/xMannixx/agent-memory-skill/issues/7) | v2.0 | `tier:exploratory` | `area:plugin` | Closed |
 | 6 | [#8 `feat(core): exponential confidence decay per authority lane`](https://github.com/xMannixx/agent-memory-skill/issues/8) | v1.4 | `tier:high-value` | `area:core`, `area:schema` | Closed |
@@ -69,7 +69,7 @@ This milestone moves beyond hard TTLs. The goal is to consolidate repeated evide
 
 ### v2.0 - Smart Retrieval
 
-This is the architectural retrieval milestone. The local-first portion has shipped: raw conversation snippets live in a separate recall lane, plugin prompt context is budgeted, authorization memory is explicitly not injected, and later turns can retrieve query-relevant evidence. The remaining v2.0 item is hybrid FTS5 plus sqlite-vec retrieval with reciprocal rank fusion.
+This is the architectural retrieval milestone, and it shipped local-first: raw conversation snippets live in a separate recall lane, plugin prompt context is budgeted, authorization memory is explicitly not injected, and later turns can retrieve query-relevant evidence. Semantic/vector retrieval (sqlite-vec) was evaluated and deliberately dropped (#5, closed as not planned): the project stays stdlib-only and dependency-free, and the v3.0 German-aware retrieval covers the synonym/concept gap deterministically.
 
 ### v2.1 - Hardening & Polish
 
@@ -86,7 +86,7 @@ Two stdlib-only capabilities shipped without changing the dependency profile:
 1. **Conflict detection** — `single_valued` policy on authority lanes; on `remember()`, detect active facts in the same lane with identical tags but different content; record in `fact_conflicts`, audit `conflict_detected`, resolve via `get_conflicts()` / `resolve_conflict()`; `stats()` exposes `open_conflicts`. Non-blocking at write time; complements automatic `consolidate()` for same-(lane, tags) groups.
 2. **Entity relations** — `entity_relations` table and `relate()` / `get_relations()` / `related_entities()` APIs; lifecycle cleanup in `forget_stale_lifecycle()`; `stats()` exposes `relations`.
 
-Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+Deferred items: procedural memory and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ### v3.2 - Relation-Aware Recall
 
@@ -98,7 +98,7 @@ authorization leak). A dedicated `relations` budget applies (default 6 lines /
 `AGENT_MEMORY_RELATIONS`; override limits with `AGENT_MEMORY_BUDGET_RELATIONS`.
 
 This makes the v3.1 entity graph useful at recall time instead of only through
-the CLI. Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+the CLI. Deferred items: procedural memory and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ### v3.3 - Neighbor Attributes & Conflict Reconciliation
 
@@ -117,10 +117,9 @@ Two focused improvements shipped without changing the dependency profile:
    `open_conflicts` and `get_conflicts()` do not show ghost pairs after
    supersede or delete.
 
-Deferred items unchanged: relevance ranking beyond current score-based ordering,
-alias/coreference recognition, dynamic per-turn budget, hybrid FTS5 +
-sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)),
-procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+Deferred items: relevance ranking beyond current score-based ordering,
+alias/coreference recognition, dynamic per-turn budget, procedural memory, and
+multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 
@@ -128,7 +127,6 @@ procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx
 - [AI Memory Management for LLMs and Agents](https://mem0.ai/blog/ai-memory-management-for-llms-and-agents)
 - [OWASP Agent Memory Guard](https://owasp.org/www-project-agent-memory-guard/)
 - [OWASP Prompt Injection Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html)
-- [Hybrid full-text search and vector search with SQLite](https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html)
 - [Synapse: Episodic-Semantic Memory via Spreading Activation](https://arxiv.org/abs/2601.02744)
 - [HeLa-Mem: Hebbian Learning and Associative Memory for LLM Agents](https://arxiv.org/abs/2604.16839)
 

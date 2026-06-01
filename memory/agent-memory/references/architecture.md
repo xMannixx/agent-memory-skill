@@ -114,9 +114,10 @@ The local-first v2.0 work keeps retrieval dependency-free:
 - The plugin ranks broad FTS candidates by query relevance instead of dropping
   them with a binary gate.
 
-Hybrid vector retrieval with sqlite-vec is intentionally left as a separate
-design step because it introduces optional native dependencies and embedding
-provider decisions.
+Semantic/vector retrieval (sqlite-vec, embeddings) is out of scope by design:
+it would introduce native dependencies and embedding-provider decisions, which
+breaks the stdlib-only, dependency-free model. The synonym/concept gap is
+instead handled deterministically by the German-aware retrieval below.
 
 ## German-Aware Retrieval (v3.0)
 
