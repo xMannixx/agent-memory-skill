@@ -16,6 +16,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
 | v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
 | v3.2 - Relation-Aware Recall | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
+| v3.3 - Neighbor Attributes | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
 
 ## Priority Tiers
 
@@ -98,6 +99,28 @@ authorization leak). A dedicated `relations` budget applies (default 6 lines /
 
 This makes the v3.1 entity graph useful at recall time instead of only through
 the CLI. Deferred items unchanged: hybrid FTS5 + sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)), procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.3 - Neighbor Attributes & Conflict Reconciliation
+
+Two focused improvements shipped without changing the dependency profile:
+
+1. **Neighbor attribute injection (opt-in)** — On query turns, when
+   `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is set to N > 0 (default `0` =
+   disabled), up to N stored `key=value` attributes per neighbor entity (sorted
+   by key) are appended to each injected relation line in `## Related`, e.g.
+   `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`.
+   Still edge-only (no facts); output remains bounded by the `relations`
+   section budget.
+2. **Conflict reconciliation** — Open `fact_conflicts` rows are automatically
+   marked resolved when either referenced fact is no longer active. Runs at the
+   end of `consolidate()`, `supersede()`, `forget()`, and `forget_stale()` so
+   `open_conflicts` and `get_conflicts()` do not show ghost pairs after
+   supersede or delete.
+
+Deferred items unchanged: relevance ranking beyond current score-based ordering,
+alias/coreference recognition, dynamic per-turn budget, hybrid FTS5 +
+sqlite-vec retrieval ([#5](https://github.com/xMannixx/agent-memory-skill/issues/5)),
+procedural memory, and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 

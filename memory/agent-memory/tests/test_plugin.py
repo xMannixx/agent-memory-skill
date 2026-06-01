@@ -27,6 +27,7 @@ def minimal_budgets(**overrides):
         "preference": {"limit": 5, "max_chars": 1600},
         "evidence": {"limit": 10, "max_chars": 3000},
         "lessons": {"limit": 3, "max_chars": 1200},
+        "relations": {"limit": 6, "max_chars": 1000},
     }
     for lane, values in overrides.items():
         budgets[lane].update(values)
@@ -317,6 +318,113 @@ def test_plugin_injects_related_entities_on_query(mem):
     assert "Manni" in context
     assert "Arriva" in context
     assert "arbeitet_bei" in context
+
+
+def test_plugin_related_entities_default_omits_neighbor_attributes(mem):
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company", {
+        "location": "Singen",
+        "type": "logistics",
+    })
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "## Related" in context
+    assert "- Manni --arbeitet_bei--> Arriva" in context
+    assert "[" not in context
+
+
+def test_plugin_related_entities_can_include_neighbor_attributes(mem, monkeypatch):
+    monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company", {
+        "type": "logistics",
+        "location": "Singen",
+        "zone": "south",
+    })
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert (
+        "- Manni --arbeitet_bei--> Arriva "
+        "[location=Singen; type=logistics]"
+    ) in context
+    assert "zone=south" not in context
+
+
+def test_plugin_related_entity_attributes_respect_relations_budget(
+    mem,
+    monkeypatch,
+):
+    monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
+    mem.track_entity("Manni", "person")
+    mem.track_entity("Arriva", "company", {
+        "location": "Singen",
+        "type": "logistics",
+    })
+    mem.relate("Manni", "arbeitet_bei", "Arriva")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+            relations={"max_chars": 20},
+        ),
+    )
+
+    assert context is None or "## Related" not in context
+
+
+def test_plugin_related_entity_without_attributes_stays_plain(mem, monkeypatch):
+    monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
+    mem.track_entity("Manni", "person")
+    mem.track_entity("X", "thing")
+    mem.relate("Manni", "kennt", "X", to_type="thing")
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="Wo arbeitet Manni?",
+        budgets=minimal_budgets(
+            identity={"limit": 0},
+            evidence={"limit": 0},
+            preference={"limit": 0},
+            lessons={"limit": 0},
+        ),
+    )
+
+    assert context is not None
+    assert "- Manni --kennt--> X" in context
+    assert "[" not in context
 
 
 def test_plugin_no_relations_without_entity_match(mem):

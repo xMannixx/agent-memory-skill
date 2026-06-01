@@ -215,6 +215,30 @@ def _relations_enabled() -> bool:
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _entity_attr_limit() -> int:
+    value = os.getenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS")
+    if not value:
+        return 0
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return 0
+
+
+def _format_entity_attrs(attributes: Any, limit: int) -> Optional[str]:
+    if limit <= 0 or not isinstance(attributes, dict) or not attributes:
+        return None
+
+    pairs = []
+    for key in sorted(attributes, key=lambda item: str(item)):
+        if len(pairs) >= limit:
+            break
+        pairs.append(f"{key}={attributes[key]}")
+    if not pairs:
+        return None
+    return " [" + "; ".join(pairs) + "]"
+
+
 def _norm_terms(text: str) -> set:
     """Normalized term set, falling back to the plugin tokenizer."""
     if _norm_query_terms is not None and _norm_normalize is not None:
@@ -256,6 +280,9 @@ def _expand_relations(
     seen = set()
     lines: List[str] = []
     matched = 0
+    attr_limit = _entity_attr_limit()
+    can_get_entity_attrs = attr_limit > 0 and hasattr(mem, "get_entity")
+    entity_cache: Dict[Any, Optional[Any]] = {}
     for entity in entities:
         name = getattr(entity, "name", None)
         if not name or not (_norm_terms(name) & query_terms):
@@ -266,14 +293,37 @@ def _expand_relations(
         except Exception:
             relations = []
         for relation in relations:
+            from_name = relation.get("from_name")
+            from_type = relation.get("from_type")
+            to_name = relation.get("to_name")
+            to_type = relation.get("to_type")
             line = (
-                f"- {relation.get('from_name')} "
+                f"- {from_name} "
                 f"--{relation.get('predicate')}--> "
-                f"{relation.get('to_name')}"
+                f"{to_name}"
             )
             if line in seen:
                 continue
             seen.add(line)
+            if can_get_entity_attrs:
+                if from_name == name:
+                    neighbor_name, neighbor_type = to_name, to_type
+                else:
+                    neighbor_name, neighbor_type = from_name, from_type
+                cache_key = (neighbor_name, neighbor_type)
+                neighbor = entity_cache.get(cache_key)
+                if cache_key not in entity_cache:
+                    try:
+                        neighbor = mem.get_entity(neighbor_name, neighbor_type)
+                    except Exception:
+                        neighbor = None
+                    entity_cache[cache_key] = neighbor
+                attr_text = _format_entity_attrs(
+                    getattr(neighbor, "attributes", None),
+                    attr_limit,
+                )
+                if attr_text:
+                    line += attr_text
             lines.append(line)
             if len(lines) >= budget["limit"]:
                 break

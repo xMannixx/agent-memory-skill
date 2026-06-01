@@ -33,7 +33,7 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
 - **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
 - **German-aware retrieval** — token-prefix FTS5 + synonym map, with fold/stem relevance scoring (deterministic, no embeddings)
-- **Conflict detection** — non-blocking detection of contradictory facts in single-valued lanes (`identity`, `authorization`) with explicit resolution
+- **Conflict detection** — non-blocking detection of contradictory facts in single-valued lanes (`identity`, `authorization`) with explicit resolution; open conflicts auto-reconcile when a referenced fact becomes inactive
 - **Entity relations** — lightweight directed graph between entities (no embeddings), with lifecycle cleanup
 - **Relation-aware recall** — on query turns, bounded 1-hop relation expansion into prompt context (edge-only, no fact/authorization leak)
 - **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, open-conflict and relation counts, and recall latency counters
@@ -111,7 +111,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 123 passed
+# Expected: 130 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -249,7 +249,9 @@ On the first turn of a session it injects a compact baseline:
 
 On later turns it stays quiet unless the hook receives a current user message. If a message is available, it keeps the identity floor and retrieves query-relevant `evidence` facts via German-aware recall (token-prefix FTS + synonyms), then ranks candidates by a relevance score (stem/synonym overlap) without a binary cutoff. The only hard limit is the per-lane character budget.
 
-When a user message mentions known entities (by normalized term overlap with entity names), the plugin also injects their direct (1-hop) relations under a `## Related` section — relation edges only, never facts, so authorization content cannot leak through this path. Expansion is bounded (default: 6 lines / 1000 characters, at most 3 matched entities per turn). Disable with `AGENT_MEMORY_RELATIONS=0` (or `false` / `no` / `off`). Override the relations lane budget with `AGENT_MEMORY_BUDGET_RELATIONS`.
+When a user message mentions known entities (by normalized term overlap with entity names), the plugin also injects their direct (1-hop) relations under a `## Related` section — relation edges only, never facts, so authorization content cannot leak through this path. Expansion is bounded (default: 6 lines / 1000 characters, at most 3 matched entities per turn). Disable with `AGENT_MEMORY_RELATIONS=0` (or `false` / `no` / `off`). Override the relations lane budget with `AGENT_MEMORY_BUDGET_RELATIONS`. Optionally append neighbor entity attributes to each relation line via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` (integer, default `0` = disabled): when set to N > 0, up to N `key=value` pairs per neighbor entity (sorted by key) are shown in brackets on that line, still clipped by the relations character budget.
+
+Open conflicts in single-valued lanes are automatically reconciled when either referenced fact is superseded or removed (`consolidate()`, `supersede()`, `forget()`, `forget_stale()`), so `stats()["open_conflicts"]` and `get_conflicts()` do not list stale pairs.
 
 `authorization` facts are never prompt-injected. They can be stored only from `observation` source and remain available for explicit code paths, not automatic prompt context.
 
@@ -301,7 +303,7 @@ agent-memory-skill/
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.2)
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.3)
 - [ROADMAP.md](ROADMAP.md) — milestones and planned work
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model

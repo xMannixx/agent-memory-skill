@@ -89,6 +89,13 @@ useful at recall time, not only via CLI.
 - **Edge-only:** Only relation edges are injected (e.g.
   `- Manni --arbeitet_bei--> Arriva`), never facts. Authorization content
   cannot leak through this path.
+- **Neighbor attributes (opt-in):** When `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is
+  set to an integer N > 0 (default `0` = disabled), up to N of each neighbor
+  entity's stored attributes (`key=value` pairs, sorted by key) are appended to
+  that relation line, e.g.
+  `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`. With
+  `0`, behavior matches v3.2 (edges only). Attribute text is still bounded by
+  the existing `relations` section character budget.
 - **Bounded:** Output is clipped by a dedicated `relations` budget (default:
   6 lines, 1000 characters). Expansion runs from at most 3 matched entities per
   turn (`RELATIONS_MAX_ENTITIES`).
@@ -164,6 +171,12 @@ operators get visibility at write time plus an explicit resolution path.
 same-(lane, tags) groups into one representative fact. Conflict detection adds
 write-time visibility and manual resolution; consolidate remains the automatic
 path. Both can apply to the same subject — not surprising if documented.
+
+**Auto-reconciliation:** Open `fact_conflicts` rows are automatically marked
+resolved when either referenced fact is no longer active. This runs at the end
+of `consolidate()`, `supersede()`, `forget()`, and `forget_stale()`, so
+`stats()["open_conflicts"]` and `get_conflicts()` do not retain ghost conflicts
+for superseded or deleted facts.
 
 ## Entity Relations
 

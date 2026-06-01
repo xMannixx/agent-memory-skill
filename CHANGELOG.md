@@ -7,6 +7,26 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.3.0] - 2026-06-01 - Neighbor Attributes & Conflict Reconciliation
+
+### Added
+- Opt-in neighbor entity attributes on plugin relation lines: when
+  `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is set to N > 0 (default `0` =
+  disabled), up to N stored `key=value` pairs per neighbor entity (sorted by
+  key) are appended in brackets on each `## Related` line (e.g.
+  `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`).
+  Still edge-only; bounded by the existing `relations` section char budget.
+
+### Fixed
+- Conflict reconciliation: open `fact_conflicts` rows are automatically marked
+  resolved when either referenced fact is no longer active. Runs at the end of
+  `consolidate()`, `supersede()`, `forget()`, and `forget_stale()` so
+  `stats()["open_conflicts"]` and `get_conflicts()` no longer list ghost
+  conflicts for superseded or deleted facts.
+
+### Changed
+- Test suite: 130 tests (was 123).
+
 ## [3.2.0] - 2026-06-01 - Relation-Aware Plugin Recall
 
 ### Added
@@ -119,6 +139,7 @@ links the issues it closed.
 - Rebound-Protection to cap memory intake after idle phases.
 - Auto-injection plugin for Hermes and a CLI for managing memory.
 
+[3.3.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.3.0
 [3.2.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.2.0
 [3.1.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.1.0
 [3.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/6

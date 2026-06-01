@@ -627,6 +627,78 @@ def test_resolve_conflict_supersedes_drop_and_marks_resolved(mem):
     assert resolved[0]["resolved"] is True
 
 
+def test_consolidate_reconciles_conflicts_for_superseded_facts(mem):
+    mem.remember(
+        "Username is alpha",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    mem.remember(
+        "Username is beta",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    assert mem.stats()["open_conflicts"] == 1
+
+    mem.consolidate()
+
+    assert mem.stats()["open_conflicts"] == 0
+    assert mem.get_conflicts() == []
+
+
+def test_forget_reconciles_conflicts_for_deleted_facts(mem):
+    mem.remember(
+        "Username is alpha",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    mem.remember(
+        "Username is beta",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    facts = mem.list_facts(tags=["username"], authority_class="identity")
+    assert mem.stats()["open_conflicts"] == 1
+
+    mem.forget(facts[0].id)
+
+    assert mem.stats()["open_conflicts"] == 0
+    assert mem.get_conflicts() == []
+
+
+def test_resolve_conflict_still_supersedes_drop_and_reconciles(mem):
+    keep = mem.remember(
+        "Username is alpha",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    drop = mem.remember(
+        "Username is beta",
+        tags=["username"],
+        authority_class="identity",
+        source="observation",
+        confidence=1.0,
+    )
+    assert mem.stats()["open_conflicts"] == 1
+
+    mem.resolve_conflict(keep, [drop])
+    dropped_fact = mem.get_fact(drop)
+
+    assert dropped_fact.superseded_by == keep
+    assert mem.stats()["open_conflicts"] == 0
+    assert mem.get_conflicts() == []
+
+
 def test_stats_tracks_open_conflicts(mem):
     assert mem.stats()["open_conflicts"] == 0
     keep = mem.remember(

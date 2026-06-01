@@ -900,6 +900,20 @@ class AgentMemory:
                 conn=conn,
             )
 
+    def _reconcile_conflicts(self, conn) -> int:
+        """Mark conflicts resolved when either referenced fact is no longer active."""
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE fact_conflicts SET resolved = 1
+            WHERE resolved = 0 AND (
+                fact_a NOT IN (SELECT id FROM facts WHERE superseded_by IS NULL)
+                OR fact_b NOT IN (SELECT id FROM facts WHERE superseded_by IS NULL)
+            )
+            """
+        )
+        return cursor.rowcount
+
     # ==================== FACTS ====================
 
     def remember(self, content: str, tags: List[str] = None,
@@ -1335,6 +1349,15 @@ class AgentMemory:
             report["facts_superseded"] += len(group) - 1
             report["groups"].append(group_report)
 
+        if not dry_run:
+            conn, should_close = self._connect()
+            try:
+                self._reconcile_conflicts(conn)
+                conn.commit()
+            finally:
+                if should_close:
+                    conn.close()
+
         return report
 
     def supersede(self, old_fact_id: str, new_content: str, **kwargs) -> Optional[str]:
@@ -1359,6 +1382,7 @@ class AgentMemory:
             },
             conn=conn,
         )
+        self._reconcile_conflicts(conn)
         conn.commit()
         if should_close:
             conn.close()
@@ -1374,6 +1398,7 @@ class AgentMemory:
             metadata={"removed": cursor.rowcount},
             conn=conn,
         )
+        self._reconcile_conflicts(conn)
         conn.commit()
         if should_close:
             conn.close()
@@ -1409,6 +1434,7 @@ class AgentMemory:
                     conn=conn,
                 )
 
+        self._reconcile_conflicts(conn)
         conn.commit()
         if should_close:
             conn.close()

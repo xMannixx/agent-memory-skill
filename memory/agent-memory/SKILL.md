@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, relation-aware plugin recall, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
-version: 3.2.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.3.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -22,9 +22,9 @@ Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Source-Trust hierarchy
 - Raw recall snippets kept separate from semantic facts
 - Auto-injection plugin with per-lane budgets and German-aware, score-ranked query retrieval (token-prefix FTS + synonyms, deterministic, no embeddings)
-- Conflict detection on single-valued lanes (`identity`, `authorization`) with explicit resolution
+- Conflict detection on single-valued lanes (`identity`, `authorization`) with explicit resolution; open conflicts auto-reconcile when a referenced fact becomes inactive
 - Entity relations: lightweight directed graph between entities (stdlib-only, no embeddings)
-- Relation-aware plugin recall: bounded 1-hop relation expansion on query turns (edge-only, budgeted)
+- Relation-aware plugin recall: bounded 1-hop relation expansion on query turns (edge-only, budgeted); opt-in neighbor entity attributes via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS`
 
 ## When to Use
 
@@ -81,7 +81,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 123 passed
+# Expected: 130 passed
 ```
 
 ## Authority Lanes
@@ -211,7 +211,7 @@ Later turns:
 - no injection unless the hook provides a current user message
 - identity remains available as a small floor
 - relevant evidence is retrieved from the user message
-- when entities are mentioned, direct relations are injected under `## Related` (1-hop, edge-only; opt-out via `AGENT_MEMORY_RELATIONS`)
+- when entities are mentioned, direct relations are injected under `## Related` (1-hop, edge-only; opt-out via `AGENT_MEMORY_RELATIONS`; optional neighbor attributes via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS`, default disabled)
 - all lanes are clipped by per-lane budgets
 
 `authorization` facts are never prompt-injected. They are allowed only from
