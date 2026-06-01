@@ -17,6 +17,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
 | v3.2 - Relation-Aware Recall | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
 | v3.3 - Neighbor Attributes | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
+| v3.4 - Source Trust | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
 
 ## Priority Tiers
 
@@ -42,7 +43,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | 9 | [#11 `feat(core): self-observability stats and latency counters`](https://github.com/xMannixx/agent-memory-skill/issues/11) | v1.3 | `tier:polish` | `area:core`, `area:cli` | Closed |
 | 10 | [#12 `perf(schema): add facts and lessons indexes and enable WAL`](https://github.com/xMannixx/agent-memory-skill/issues/12) | v1.2 | `tier:must-do` | `area:schema` | Closed |
 | 11 | [#13 `feat(core): lesson and entity lifecycle with decay on use`](https://github.com/xMannixx/agent-memory-skill/issues/13) | v1.2 | `tier:polish` | `area:core`, `area:schema` | Closed |
-| 12 | [#14 `feat(core): finer source trust graduation and promotion rules`](https://github.com/xMannixx/agent-memory-skill/issues/14) | Backlog | `tier:polish` | `area:core` | Open |
+| 12 | [#14 `feat(core): finer source trust graduation and promotion rules`](https://github.com/xMannixx/agent-memory-skill/issues/14) | v3.4 | `tier:polish` | `area:core` | Closed (scoped; promotion rules dropped) |
 | 13 | [#15 `feat(plugin): token budget, lazy tool retrieval, authorization lane decision`](https://github.com/xMannixx/agent-memory-skill/issues/15) | v2.0 | `tier:exploratory` | `area:plugin` | Closed |
 | 14 | [#16 `test(infra): file-DB coverage, property tests, frozen-time helpers`](https://github.com/xMannixx/agent-memory-skill/issues/16) | v1.2 | `tier:polish` | `area:tests` | Closed |
 | 15 | [#17 `refactor(core): small hygiene umbrella`](https://github.com/xMannixx/agent-memory-skill/issues/17) | v1.2 | `tier:polish` | `area:core` | Closed |
@@ -120,6 +121,26 @@ Two focused improvements shipped without changing the dependency profile:
 Deferred items: relevance ranking beyond current score-based ordering,
 alias/coreference recognition, dynamic per-turn budget, procedural memory, and
 multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.4 - Source Trust
+
+Memory poisoning defenses gained finer source categories and a per-lane write
+matrix:
+
+1. **Five sources** — `observation`, `conversation`, `inference`, `tool`,
+   `external` (trust order: observation > conversation > inference > tool >
+   external; `external` = untrusted, e.g. external documents).
+2. **Per-lane policy** — `identity` and `preference`: observation,
+   conversation only; `evidence`: all five (quarantine lane); `authorization`:
+   observation only.
+3. **Guarantee** — `tool` and `external` can write only `evidence`; they
+   cannot write `identity` or `authorization`. Rejected writes audit as
+   `policy_reject` / `source_not_allowed`. CLI `--source` accepts all five
+   values.
+
+Promotion / repeated-verification rules were intentionally out of scope
+(overlap with existing `consolidate()` confidence behavior). Deferred items:
+procedural memory and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 

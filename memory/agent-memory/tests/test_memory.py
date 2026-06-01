@@ -1073,12 +1073,18 @@ def test_memory_db_does_not_use_wal(mem):
         ("identity", "observation", 1.0, True),
         ("identity", "conversation", 0.95, True),
         ("identity", "inference", 1.0, False),
+        ("identity", "tool", 1.0, False),
+        ("identity", "external", 1.0, False),
         ("preference", "conversation", 0.3, True),
         ("preference", "conversation", 0.29, False),
         ("evidence", "inference", 0.5, True),
+        ("evidence", "tool", 0.5, True),
+        ("evidence", "external", 0.5, True),
         ("evidence", "conversation", 0.49, False),
         ("authorization", "observation", 0.9, True),
         ("authorization", "conversation", 1.0, False),
+        ("authorization", "tool", 1.0, False),
+        ("authorization", "external", 1.0, False),
     ],
 )
 def test_authority_policy_accept_reject_matrix(
@@ -1092,6 +1098,64 @@ def test_authority_policy_accept_reject_matrix(
         confidence=confidence
     )
     assert (result is not None) is expected
+
+
+@pytest.mark.parametrize("source", ["external", "tool"])
+@pytest.mark.parametrize("authority_class", ["identity", "authorization"])
+def test_low_trust_sources_cannot_write_authority_lanes(
+    mem, authority_class, source
+):
+    """Low-trust sources cannot write identity or authorization facts."""
+    result = mem.remember(
+        f"Low trust source {source} cannot write {authority_class}",
+        authority_class=authority_class,
+        source=source,
+        confidence=1.0
+    )
+
+    assert result is None
+
+
+@pytest.mark.parametrize("source", ["external", "tool", "inference"])
+def test_lower_trust_sources_can_write_evidence(mem, source):
+    """Lower-trust sources are accepted only in the evidence lane."""
+    content = f"Quarantined evidence from {source}"
+    fact_id = mem.remember(
+        content,
+        authority_class="evidence",
+        source=source,
+        confidence=0.9
+    )
+
+    facts = mem.recall("Quarantined", authority_class="evidence",
+                       min_confidence=0.5)
+
+    assert fact_id is not None
+    assert any(
+        f.id == fact_id and f.content == content and f.source == source
+        for f in facts
+    )
+
+
+def test_source_policy_reject_audit_records_reason(mem):
+    """Rejected source writes record source_not_allowed in the audit log."""
+    result = mem.remember(
+        "External source must not set identity",
+        authority_class="identity",
+        source="external",
+        confidence=1.0
+    )
+
+    rejects = mem.get_audit(op="policy_reject")
+
+    assert result is None
+    assert any(
+        e["authority_class"] == "identity"
+        and e["source"] == "external"
+        and e["reason"] == "source_not_allowed"
+        and not e["accepted"]
+        for e in rejects
+    )
 
 
 def test_file_backed_db_persists_across_instances(tmp_path):

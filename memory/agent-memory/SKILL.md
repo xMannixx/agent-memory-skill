@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
-version: 3.3.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.4.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -19,7 +19,7 @@ Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Authority Lanes (identity / preference / evidence / authorization)
 - Rebound-Protection after idle phases (signalfoundry / Moltbook pattern)
 - Class-specific TTL and forget_stale()
-- Source-Trust hierarchy
+- Finer source trust: five sources with per-lane write policy (`tool`/`external` quarantined to `evidence`; `identity`/`authorization` protected)
 - Raw recall snippets kept separate from semantic facts
 - Auto-injection plugin with per-lane budgets and German-aware, score-ranked query retrieval (token-prefix FTS + synonyms, deterministic, no embeddings)
 - Conflict detection on single-valued lanes (`identity`, `authorization`) with explicit resolution; open conflicts auto-reconcile when a referenced fact becomes inactive
@@ -81,17 +81,17 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 130 passed
+# Expected: 144 passed
 ```
 
 ## Authority Lanes
 
-| Class         | TTL   | Min Confidence | Allowed Sources                       | Notes                     |
-|---------------|-------|----------------|---------------------------------------|---------------------------|
-| identity      | NEVER | 0.9            | observation, conversation             | Floor — never expires     |
-| preference    | 14d   | 0.3            | conversation, observation             | Tone, style, language     |
-| evidence      | 60d   | 0.5            | conversation, observation, inference  | Technical facts, claims   |
-| authorization | 90d   | 0.9            | observation ONLY                      | Never from conversation   |
+| Class         | TTL   | Min Confidence | Allowed Sources                                      | Notes                     |
+|---------------|-------|----------------|------------------------------------------------------|---------------------------|
+| identity      | NEVER | 0.9            | observation, conversation                            | Floor — never expires     |
+| preference    | 14d   | 0.3            | observation, conversation                            | Tone, style, language     |
+| evidence      | 60d   | 0.5            | observation, conversation, inference, tool, external | Quarantine for lower-trust input |
+| authorization | 90d   | 0.9            | observation ONLY                                     | Never from conversation/tool/external |
 
 ## Rebound-Protection
 

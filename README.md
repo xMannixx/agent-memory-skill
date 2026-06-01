@@ -33,6 +33,7 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
 - **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
 - **German-aware retrieval** — token-prefix FTS5 + synonym map, with fold/stem relevance scoring (deterministic, no embeddings)
+- **Finer source trust** — five source categories with per-lane write policy; `tool` and `external` input quarantined to `evidence` only (cannot write `identity` or `authorization`)
 - **Conflict detection** — non-blocking detection of contradictory facts in single-valued lanes (`identity`, `authorization`) with explicit resolution; open conflicts auto-reconcile when a referenced fact becomes inactive
 - **Entity relations** — lightweight directed graph between entities (no embeddings), with lifecycle cleanup
 - **Relation-aware recall** — on query turns, bounded 1-hop relation expansion into prompt context (edge-only, no fact/authorization leak)
@@ -46,14 +47,14 @@ This skill adds a structured memory layer on top of Hermes with:
 
 The core idea: not all facts are equal. Different types of information need different rules.
 
-| Class         | TTL    | Min Confidence | Allowed Sources                      | Purpose                        |
-|---------------|--------|----------------|--------------------------------------|--------------------------------|
-| `identity`    | NEVER  | 0.9            | observation, conversation            | Name, role, language — permanent anchor |
-| `preference`  | 14d    | 0.3            | conversation, observation            | Tone, style, communication patterns |
-| `evidence`    | 60d    | 0.5            | conversation, observation, inference | Technical facts, config, project state |
-| `authorization` | 90d  | 0.9            | **observation ONLY**                 | Permissions — never from conversation |
+| Class         | TTL    | Min Confidence | Allowed Sources                                      | Purpose                        |
+|---------------|--------|----------------|------------------------------------------------------|--------------------------------|
+| `identity`    | NEVER  | 0.9            | observation, conversation                            | Name, role, language — permanent anchor |
+| `preference`  | 14d    | 0.3            | observation, conversation                            | Tone, style, communication patterns |
+| `evidence`    | 60d    | 0.5            | observation, conversation, inference, tool, external | Technical facts, config, project state (quarantine lane for lower-trust input) |
+| `authorization` | 90d  | 0.9            | **observation ONLY**                                 | Permissions — never from conversation or external/tool sources |
 
-The `authorization` lane is especially important: a fact like "you are allowed to delete files" coming from a conversation message is **silently rejected**. This prevents prompt injection attacks from escalating privileges through memory.
+Trust order (most to least): `observation` > `conversation` > `inference` > `tool` > `external`. The `authorization` lane accepts only `observation`. `tool` and `external` sources can write **only** `evidence` — never `identity` or `authorization` — so poisoned external or tool output cannot escalate into identity or permission memory.
 
 ---
 
@@ -111,7 +112,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 130 passed
+# Expected: 144 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -303,7 +304,7 @@ agent-memory-skill/
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.3)
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.4)
 - [ROADMAP.md](ROADMAP.md) — milestones and planned work
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model

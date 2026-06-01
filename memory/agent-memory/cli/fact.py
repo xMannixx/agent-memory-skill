@@ -19,7 +19,13 @@ def main():
     add_p.add_argument("content", help="The fact")
     add_p.add_argument("--tags", "-t", nargs="+", default=[], help="Tags")
     add_p.add_argument("--source", "-s", default="conversation",
-                       choices=["conversation", "observation", "inference"])
+                       choices=[
+                           "observation",
+                           "conversation",
+                           "inference",
+                           "tool",
+                           "external",
+                       ])
     add_p.add_argument("--confidence", "-c", type=float, default=0.9)
     add_p.add_argument("--authority", "-a", default="evidence",
                        choices=list(AUTHORITY_POLICY.keys()),

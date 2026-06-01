@@ -7,6 +7,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.4.0] - 2026-06-01 - Source Trust
+
+### Added
+- Finer source categories: `tool` and `external` join `observation`,
+  `conversation`, and `inference`. Trust order (most to least): observation >
+  conversation > inference > tool > external.
+- Per-lane source-trust matrix: `identity` and `preference` allow observation
+  and conversation; `evidence` allows all five; `authorization` allows
+  observation only.
+- CLI `--source` flag accepts all five source values.
+
+### Security
+- `tool` and `external` sources can write only the `evidence` lane; they
+  cannot write `identity` or `authorization`. Rejected writes are audited as
+  `policy_reject` with reason `source_not_allowed`.
+
+### Changed
+- Test suite: 144 tests (was 130).
+
 ## [3.3.0] - 2026-06-01 - Neighbor Attributes & Conflict Reconciliation
 
 ### Added
@@ -139,6 +158,7 @@ links the issues it closed.
 - Rebound-Protection to cap memory intake after idle phases.
 - Auto-injection plugin for Hermes and a CLI for managing memory.
 
+[3.4.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.4.0
 [3.3.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.3.0
 [3.2.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.2.0
 [3.1.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.1.0

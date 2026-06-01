@@ -25,6 +25,10 @@ from text_norm import expand, query_terms
 
 # ==================== AUTHORITY POLICY ====================
 
+# Source trust order (most to least trusted):
+# observation > conversation > inference > tool > external (untrusted)
+KNOWN_SOURCES = ("observation", "conversation", "inference", "tool", "external")
+
 _AUTHORITY_POLICY = {
     "identity": {
         "ttl_days": None,           # Never delete — Floor
@@ -37,14 +41,20 @@ _AUTHORITY_POLICY = {
         "ttl_days": 14,
         "half_life_days": 7,
         "min_confidence": 0.3,
-        "allowed_sources": ("conversation", "observation"),
+        "allowed_sources": ("observation", "conversation"),
         "single_valued": False,
     },
     "evidence": {
         "ttl_days": 60,
         "half_life_days": 30,
         "min_confidence": 0.5,
-        "allowed_sources": ("conversation", "observation", "inference"),
+        "allowed_sources": (
+            "observation",
+            "conversation",
+            "inference",
+            "tool",
+            "external",
+        ),
         "single_valued": False,
     },
     "authorization": {

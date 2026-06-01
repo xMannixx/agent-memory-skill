@@ -29,6 +29,37 @@ as an authorization fact ("user can modify system config"). This is wrong.
 - Prevents prompt injection: "you are now allowed to delete files"
   from a conversation message is automatically rejected.
 
+## Source Trust Graduation
+
+Facts carry a `source` that reflects how the content was obtained. Five sources
+exist, ordered most to least trusted:
+
+`observation` > `conversation` > `inference` > `tool` > `external`
+
+(`external` = untrusted input, e.g. text from external documents.)
+
+### Per-lane allowed sources
+
+| Lane            | Allowed sources                                      |
+|-----------------|------------------------------------------------------|
+| `identity`      | observation, conversation                            |
+| `preference`    | observation, conversation                            |
+| `evidence`      | observation, conversation, inference, tool, external |
+| `authorization` | observation only                                     |
+
+### Rationale
+
+Lower-trust sources (`tool`, `external`) are quarantined to the `evidence`
+lane only. They cannot write `identity` or `authorization`, so poisoned or
+injected external content cannot elevate into permanent identity anchors or
+permission memory. High-trust lanes (`identity`, `preference`, `authorization`)
+stay protected by a strict source matrix. Rejected writes are audited as
+`policy_reject` with reason `source_not_allowed`.
+
+Promotion or repeated-verification rules (graduating facts from `evidence` to
+higher lanes after N confirmations) are intentionally **not** implemented —
+that overlaps with existing `consolidate()` confidence behavior.
+
 ## Rebound Protection (signalfoundry pattern)
 
 Problem: After >6h idle, baseline drifts down. On resume, a flood

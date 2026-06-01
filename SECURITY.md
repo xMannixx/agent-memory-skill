@@ -29,8 +29,15 @@ prompt injection. The project includes deliberate defenses:
   only from `observation` source and are never placed into prompt context, so a
   conversational "you are now allowed to delete files" cannot escalate
   privileges through memory. This is covered by a negative test.
-- **Source trust.** Facts carry a source; conversational input is treated as
-  lower trust than observed/system input.
+- **Source trust.** Facts carry one of five sources, ordered most to least
+  trusted: `observation` > `conversation` > `inference` > `tool` > `external`
+  (`external` = untrusted input, e.g. content from external documents). Each
+  authority lane allows only specific sources: `identity` and `preference` accept
+  `observation` and `conversation`; `evidence` accepts all five (quarantine lane
+  for lower-trust input); `authorization` accepts `observation` only. **`tool`
+  and `external` can write only `evidence`** — they cannot write `identity` or
+  `authorization`. Rejected writes are audited as `policy_reject` with reason
+  `source_not_allowed`.
 - **Rebound-Protection.** Memory intake is capped after idle phases to limit
   flooding.
 - **Audit trail and recovery.** Writes and policy decisions are audited;
