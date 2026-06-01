@@ -1,5 +1,10 @@
 # agent-memory
 
+[![CI](https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Dependencies: stdlib only](https://img.shields.io/badge/deps-stdlib%20only-success.svg)](requirements-dev.txt)
+
 **Persistent SQLite memory for Hermes Agent** — structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.
 
 Built by [xMannixx](https://github.com/xMannixx), based on Lena OpenClaw's `agent-memory-1-0-0`.
