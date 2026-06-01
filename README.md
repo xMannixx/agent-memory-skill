@@ -38,7 +38,8 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Entity relations** — lightweight directed graph between entities (no embeddings), with lifecycle cleanup
 - **Relation-aware recall** — on query turns, bounded 1-hop relation expansion into prompt context (edge-only, no fact/authorization leak)
 - **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, open-conflict and relation counts, and recall latency counters
-- **CLI** — manage facts, snippets, lessons, entities, relations, conflicts, snapshots, and consolidation from the terminal
+- **Provenance** — read-only reconstruction of a fact's audit chain (write, update, supersede, forget, conflict) from the append-only audit log; no duplicate provenance storage
+- **CLI** — manage facts, snippets, lessons, entities, relations, conflicts, snapshots, provenance, and consolidation from the terminal
 - **systemd timer** — daily cleanup of stale facts
 
 ---
@@ -112,7 +113,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 144 passed
+# Expected: 148 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -222,10 +223,11 @@ python3 $CLI conflicts
 python3 $CLI conflicts --all
 python3 $CLI resolve-conflict <keep_id> <drop_id> [drop_id ...]
 
-# Audit, snapshots, and consolidation
+# Audit, snapshots, provenance, and consolidation
 python3 $CLI audit --limit 10
 python3 $CLI snapshot --label before-refactor
 python3 $CLI snapshots
+python3 $CLI provenance <fact_id>
 python3 $CLI consolidate --dry-run
 
 # Cleanup stale facts
@@ -304,7 +306,7 @@ agent-memory-skill/
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.4)
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.5)
 - [ROADMAP.md](ROADMAP.md) — milestones and planned work
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model

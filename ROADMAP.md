@@ -18,6 +18,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | v3.2 - Relation-Aware Recall | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
 | v3.3 - Neighbor Attributes | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
 | v3.4 - Source Trust | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
+| v3.5 - Provenance | Read-only provenance view derived from the append-only audit log; `get_provenance()` and CLI `provenance` command. | Complete |
 
 ## Priority Tiers
 
@@ -141,6 +142,27 @@ matrix:
 Promotion / repeated-verification rules were intentionally out of scope
 (overlap with existing `consolidate()` confidence behavior). Deferred items:
 procedural memory and multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.5 - Provenance
+
+A read-only provenance view reconstructs a fact's history from the existing
+append-only audit log (`memory_audit`). No new table or column was added — the
+audit log remains the single source of truth.
+
+1. **`get_provenance(fact_id, limit=100)`** — Returns the fact's audit chain in
+   chronological order (oldest first): write, update, supersede, forget, and
+   conflict events. Matches rows by `fact_id` and includes supersede events
+   that reference the id in metadata (`old_id` / `new_id`), so a superseded
+   fact shows it was superseded and a keeper shows what it superseded. Unknown
+   ids return an empty list.
+2. **CLI `provenance <fact_id>`** — Prints one line per event (timestamp,
+   operation, source, reason).
+3. **Design note** — Provenance is derived from the audit log; there is
+   intentionally no duplicate `provenance_chain` storage.
+
+Deferred items: async consolidation, multi-factor retrieval ranking,
+OpenTelemetry observability, and multi-agent namespaces
+([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 

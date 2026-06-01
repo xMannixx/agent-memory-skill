@@ -1397,6 +1397,80 @@ def test_audit_includes_content_hash(mem):
     assert entries[0]["content_hash"] == expected
 
 
+def test_provenance_tracks_initial_write(mem):
+    fact_id = mem.remember(
+        "Provenance write fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    provenance = mem.get_provenance(fact_id)
+
+    assert len(provenance) == 1
+    assert provenance[0]["op"] == "write"
+    assert provenance[0]["source"] == "conversation"
+    assert provenance[0]["authority_class"] == "evidence"
+
+
+def test_provenance_tracks_update_chronologically(mem):
+    first = mem.remember(
+        "Provenance update fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    second = mem.remember(
+        "Provenance update fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+
+    provenance = mem.get_provenance(first)
+
+    assert second == first
+    assert [entry["op"] for entry in provenance] == ["write", "update"]
+    assert [entry["id"] for entry in provenance] == sorted(
+        entry["id"] for entry in provenance
+    )
+    assert [entry["ts"] for entry in provenance] == sorted(
+        entry["ts"] for entry in provenance
+    )
+
+
+def test_provenance_includes_supersede_for_old_and_new_ids(mem):
+    old_id = mem.remember(
+        "Provenance old fact",
+        authority_class="evidence",
+        source="conversation",
+        confidence=0.9,
+    )
+    new_id = mem.supersede(
+        old_id,
+        "Provenance new fact",
+        authority_class="evidence",
+        source="observation",
+        confidence=0.8,
+    )
+
+    new_provenance = mem.get_provenance(new_id)
+    old_provenance = mem.get_provenance(old_id)
+
+    assert new_id is not None
+    assert any(entry["op"] == "supersede" for entry in new_provenance)
+    assert any(entry["op"] == "supersede" for entry in old_provenance)
+    supersede_entry = next(
+        entry for entry in old_provenance if entry["op"] == "supersede"
+    )
+    assert supersede_entry["metadata"]["old_id"] == old_id
+    assert supersede_entry["metadata"]["new_id"] == new_id
+
+
+def test_provenance_unknown_id_is_empty(mem):
+    assert mem.get_provenance("doesnotexist") == []
+
+
 # ==================== TEST 10: Snapshots / Restore ====================
 
 def test_snapshot_creates_file_with_metadata(file_mem):

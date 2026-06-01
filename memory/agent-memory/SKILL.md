@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
-version: 3.4.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, provenance (read-only audit-chain reconstruction), finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.5.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -25,6 +25,7 @@ Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Conflict detection on single-valued lanes (`identity`, `authorization`) with explicit resolution; open conflicts auto-reconcile when a referenced fact becomes inactive
 - Entity relations: lightweight directed graph between entities (stdlib-only, no embeddings)
 - Relation-aware plugin recall: bounded 1-hop relation expansion on query turns (edge-only, budgeted); opt-in neighbor entity attributes via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS`
+- Provenance: read-only reconstruction of a fact's audit chain via `get_provenance()` and CLI `provenance` (derived from the append-only audit log; no duplicate storage)
 
 ## When to Use
 
@@ -81,7 +82,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 144 passed
+# Expected: 148 passed
 ```
 
 ## Authority Lanes
@@ -177,9 +178,10 @@ $PYTHON $CLI stats
 $PYTHON $CLI snippet add "Discussed local-first retrieval" --session demo
 $PYTHON $CLI snippet search retrieval --session demo
 
-# Audit / snapshots / consolidation
+# Audit / snapshots / provenance / consolidation
 $PYTHON $CLI audit --limit 10
 $PYTHON $CLI snapshot --label before-change
+$PYTHON $CLI provenance <fact_id>
 $PYTHON $CLI consolidate --dry-run
 
 # Cleanup

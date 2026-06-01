@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.5.0] - 2026-06-01 - Provenance
+
+### Added
+- `get_provenance(fact_id, limit=100)`: read-only reconstruction of a fact's
+  audit chain in chronological order (write, update, supersede, forget,
+  conflict) from the append-only `memory_audit` log. Matches by `fact_id` and
+  includes supersede events that reference the id in metadata (`old_id` /
+  `new_id`). Unknown ids return an empty list.
+- CLI `provenance <fact_id>`: prints one line per event (timestamp, operation,
+  source, reason).
+
+### Changed
+- Test suite: 148 tests (was 144).
+
 ## [3.4.0] - 2026-06-01 - Source Trust
 
 ### Added
@@ -158,6 +172,7 @@ links the issues it closed.
 - Rebound-Protection to cap memory intake after idle phases.
 - Auto-injection plugin for Hermes and a CLI for managing memory.
 
+[3.5.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.5.0
 [3.4.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.4.0
 [3.3.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.3.0
 [3.2.0]: https://github.com/xMannixx/agent-memory-skill/releases/tag/v3.2.0

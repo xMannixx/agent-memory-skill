@@ -2052,6 +2052,20 @@ class AgentMemory:
 
     # ==================== AUDIT / ANOMALY ====================
 
+    def _row_to_audit_entry(self, row) -> Dict[str, Any]:
+        return {
+            "id": row[0],
+            "ts": row[1],
+            "op": row[2],
+            "fact_id": row[3],
+            "content_hash": row[4],
+            "authority_class": row[5],
+            "source": row[6],
+            "accepted": bool(row[7]),
+            "reason": row[8],
+            "metadata": json.loads(row[9]) if row[9] else None,
+        }
+
     def get_audit(self, limit: int = 100, since: Optional[str] = None,
                   op: Optional[str] = None) -> List[Dict[str, Any]]:
         """Returns audit entries, newest first. since: ISO timestamp."""
@@ -2075,21 +2089,39 @@ class AgentMemory:
         if should_close:
             conn.close()
 
-        return [
-            {
-                "id": r[0],
-                "ts": r[1],
-                "op": r[2],
-                "fact_id": r[3],
-                "content_hash": r[4],
-                "authority_class": r[5],
-                "source": r[6],
-                "accepted": bool(r[7]),
-                "reason": r[8],
-                "metadata": json.loads(r[9]) if r[9] else None,
-            }
-            for r in rows
-        ]
+        return [self._row_to_audit_entry(r) for r in rows]
+
+    def get_provenance(self, fact_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Reconstruct a fact's audit chain (chronological). Read-only view over
+        memory_audit; no separate provenance storage. Includes supersede events that
+        reference this id in their metadata (old_id/new_id)."""
+        conn, should_close = self._connect()
+        cursor = conn.cursor()
+        escaped_id = self._escape_like(fact_id)
+        old_ref = f'%"old_id": "{escaped_id}"%'
+        new_ref = f'%"new_id": "{escaped_id}"%'
+
+        cursor.execute("""
+            SELECT id, ts, op, fact_id, content_hash, authority_class,
+                   source, accepted, reason, metadata
+            FROM memory_audit
+            WHERE fact_id = ?
+            OR metadata LIKE ? ESCAPE '\\'
+            OR metadata LIKE ? ESCAPE '\\'
+            ORDER BY id ASC LIMIT ?
+        """, (fact_id, old_ref, new_ref, limit))
+        rows = cursor.fetchall()
+        if should_close:
+            conn.close()
+
+        entries = []
+        seen_ids = set()
+        for row in rows:
+            if row[0] in seen_ids:
+                continue
+            seen_ids.add(row[0])
+            entries.append(self._row_to_audit_entry(row))
+        return entries
 
     def anomalies(self, limit: int = 10) -> List[Dict[str, Any]]:
         return self.get_audit(limit=limit, op="anomaly_detected")

@@ -110,6 +110,13 @@ def main():
     audit_p.add_argument("--limit", "-n", type=int, default=20)
     audit_p.add_argument("--op", help="Filter by operation type")
 
+    # provenance
+    provenance_p = subparsers.add_parser(
+        "provenance",
+        help="Show fact provenance"
+    )
+    provenance_p.add_argument("fact_id", help="Fact ID")
+
     # audit-prune
     audit_prune_p = subparsers.add_parser(
         "audit-prune",
@@ -320,6 +327,16 @@ def main():
             fid = f" fact={e['fact_id']}" if e["fact_id"] else ""
             cls = f" {e['authority_class']}" if e["authority_class"] else ""
             print(f"[{e['ts']}] {flag} {e['op']}{cls}{fid}{reason}")
+
+    elif args.command == "provenance":
+        entries = mem.get_provenance(args.fact_id)
+        if not entries:
+            print(f"No provenance for {args.fact_id}")
+        for e in entries:
+            print(
+                f"{e['ts']}  {e['op']}  "
+                f"source={e['source']}  reason={e['reason']}"
+            )
 
     elif args.command == "audit-prune":
         removed = mem.forget_old_audit(days=args.days)

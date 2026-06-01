@@ -43,6 +43,10 @@ prompt injection. The project includes deliberate defenses:
 - **Audit trail and recovery.** Writes and policy decisions are audited;
   snapshots allow rollback, and rapid-change write patterns are flagged by
   anomaly detection. Audit history is retention-bounded.
+- **Provenance and auditability.** A stored fact's full origin chain — when it
+  was written, which source, which operation — is reconstructable from the
+  append-only audit log via `get_provenance()`. This supports memory-poisoning
+  forensics without duplicating provenance into a separate store.
 
 ## Scope and limitations
 

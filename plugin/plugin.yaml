@@ -1,5 +1,5 @@
 name: agent-memory-plugin
-version: 3.4.0
-description: "Injects bounded AgentMemory context: first-turn baseline plus German-aware, score-ranked evidence retrieval and 1-hop relation-aware recall on later turns, with opt-in neighbor entity attributes on relation lines. Core memory v3.4 adds finer source trust (tool/external quarantined to evidence)."
+version: 3.5.0
+description: "Injects bounded AgentMemory context: first-turn baseline plus German-aware, score-ranked evidence retrieval and 1-hop relation-aware recall on later turns, with opt-in neighbor entity attributes on relation lines. Core memory v3.5 adds provenance (read-only audit-chain reconstruction) and v3.4 finer source trust (tool/external quarantined to evidence)."
 author: Hermes Agent
 kind: general

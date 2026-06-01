@@ -229,3 +229,16 @@ edges whose endpoints no longer exist. `stats()` includes `relations`.
 **Design rationale:** Stdlib-only, deterministic graph edges for structured
 context (who works where, what owns what) without vector search or NLP parsing.
 Complements facts and entities; retrieval stays explicit via name and predicate.
+
+## Provenance
+
+Provenance is a read-only view over the append-only `memory_audit` log. It
+reconstructs a fact's write/update/supersede/forget/conflict chain in
+chronological order (oldest first) via `get_provenance(fact_id, limit=100)`.
+Rows match by `fact_id`; supersede events that reference the id in metadata
+(`old_id` / `new_id`) are included so a superseded fact shows it was superseded
+and a keeper shows what it superseded. Unknown ids return an empty list.
+
+There is intentionally **no** duplicate `provenance_chain` storage — the audit
+log is the single source of truth. The CLI `provenance <fact_id>` command prints
+one line per event (timestamp, operation, source, reason).
