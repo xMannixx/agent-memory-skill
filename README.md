@@ -27,7 +27,7 @@ A preference fact ("user likes short answers") has the same weight as a technica
 
 This skill adds a structured memory layer on top of Hermes with:
 
-- **Authority Lanes** — 4 classes with separate TTL, confidence thresholds, and source policies
+- **Authority Lanes** — 5 classes with separate TTL, confidence thresholds, and source policies
 - **Recall snippets** — raw conversation recall stored separately from distilled semantic facts
 - **Rebound-Protection** — caps memory intake after idle phases to prevent flooding
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
@@ -39,7 +39,8 @@ This skill adds a structured memory layer on top of Hermes with:
 - **Relation-aware recall** — on query turns, bounded 1-hop relation expansion into prompt context (edge-only, no fact/authorization leak)
 - **Audit, snapshots, and stats** — recovery trail, rollback, anomaly detection, open-conflict and relation counts, and recall latency counters
 - **Provenance** — read-only reconstruction of a fact's audit chain (write, update, supersede, forget, conflict) from the append-only audit log; no duplicate provenance storage
-- **CLI** — manage facts, snippets, lessons, entities, relations, conflicts, snapshots, provenance, and consolidation from the terminal
+- **Procedural lane** — self-written behavioral rules (how to respond, not what is true) in a dedicated `procedural` class: observation-only, a mandatory human review-gate (no auto-approve), deterministic rule-conflict / artifact-bloat detection, and a bounded, sanitized, query-aware `## Procedural Rules` injection block
+- **CLI** — manage facts, snippets, lessons, entities, relations, conflicts, snapshots, provenance, procedural rules, and consolidation from the terminal
 - **systemd timer** — daily cleanup of stale facts
 
 ---
@@ -54,8 +55,40 @@ The core idea: not all facts are equal. Different types of information need diff
 | `preference`  | 14d    | 0.3            | observation, conversation                            | Tone, style, communication patterns |
 | `evidence`    | 60d    | 0.5            | observation, conversation, inference, tool, external | Technical facts, config, project state (quarantine lane for lower-trust input) |
 | `authorization` | 90d  | 0.9            | **observation ONLY**                                 | Permissions — never from conversation or external/tool sources |
+| `procedural`  | 30d    | 0.5            | **observation ONLY**                                 | Self-written behavioral rules; stored in a separate table, never auto-active |
 
-Trust order (most to least): `observation` > `conversation` > `inference` > `tool` > `external`. The `authorization` lane accepts only `observation`. `tool` and `external` sources can write **only** `evidence` — never `identity` or `authorization` — so poisoned external or tool output cannot escalate into identity or permission memory.
+Trust order (most to least): `observation` > `conversation` > `inference` > `tool` > `external`. The `authorization` and `procedural` lanes accept only `observation`. `tool` and `external` sources can write **only** `evidence` — never `identity`, `authorization`, or `procedural` — so poisoned external or tool output cannot escalate into identity, permission, or behavior memory.
+
+---
+
+## Procedural Lane
+
+Facts describe what is true; **procedural rules** describe how the agent should
+behave ("keep responses concise", "for technical questions include runnable
+code"). Because a rule the agent writes today changes its own behavior tomorrow,
+the procedural lane treats rules as self-modifying behavior code with a stricter
+lifecycle than facts. Rules live in their own `procedural_rules` table (not in
+`facts`) and never auto-activate.
+
+- **Propose (observation-only)** — `propose_rule(domain, trigger, effect, behavior_text, ...)`
+  creates a `pending` rule. Only `source="observation"` is accepted; the agent
+  can surface candidates but cannot inject free-form self-instructions.
+- **Review-gate (mandatory)** — `approve_rule(rule_id)` is the only path to
+  active. There is no auto-approval, regardless of confidence.
+- **Conflict detection (deterministic, stdlib-only)** — on approval, a candidate
+  is compared to active rules via trigger-overlap and a structured effect
+  vector. **Direct contradictions** (opposite values on the same effect axis)
+  hard-block and cannot be overridden. **Interactions** (same domain) and
+  **artifact bloat** (cumulative `artifact_cost` over budget) soft-block unless
+  approved with `--ack-interactions`. Conflicts are recorded in `rule_conflicts`.
+- **Drift containment** — per-domain budgets, a global active-rule cap, a 30-day
+  TTL with re-approval, and supersession via `previous_rule_id` keep
+  accumulation bounded. `forget_stale()` expires rules past their TTL.
+- **Bounded injection** — the plugin injects only active, trigger-matching rules
+  in a dedicated `## Procedural Rules` block (default 5 rules / 1500 chars).
+  Rule text is sanitized (code fences, `SYSTEM:` / `ignore previous`,
+  length-capped); rationale and evidence are never injected. First-turn changes
+  are flagged `[NEW]` so behavioral drift is visible as it enters the prompt.
 
 ---
 
@@ -113,7 +146,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 148 passed
+# Expected: 170 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -223,6 +256,17 @@ python3 $CLI conflicts
 python3 $CLI conflicts --all
 python3 $CLI resolve-conflict <keep_id> <drop_id> [drop_id ...]
 
+# Procedural rules (observation-only; mandatory review-gate)
+python3 $CLI propose-rule --domain response_style \
+  --trigger '{"scope":"always"}' --effect '{"length":"short"}' \
+  --behavior "Keep responses concise."
+python3 $CLI pending-rules
+python3 $CLI approve-rule <rule_id> --by manni        # add --ack-interactions to override soft blocks
+python3 $CLI active-rules
+python3 $CLI rule-conflicts
+python3 $CLI reject-rule <rule_id> "too broad"
+python3 $CLI retire-rule <rule_id>
+
 # Audit, snapshots, provenance, and consolidation
 python3 $CLI audit --limit 10
 python3 $CLI snapshot --label before-refactor
@@ -254,9 +298,11 @@ On later turns it stays quiet unless the hook receives a current user message. I
 
 When a user message mentions known entities (by normalized term overlap with entity names), the plugin also injects their direct (1-hop) relations under a `## Related` section — relation edges only, never facts, so authorization content cannot leak through this path. Expansion is bounded (default: 6 lines / 1000 characters, at most 3 matched entities per turn). Disable with `AGENT_MEMORY_RELATIONS=0` (or `false` / `no` / `off`). Override the relations lane budget with `AGENT_MEMORY_BUDGET_RELATIONS`. Optionally append neighbor entity attributes to each relation line via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` (integer, default `0` = disabled): when set to N > 0, up to N `key=value` pairs per neighbor entity (sorted by key) are shown in brackets on that line, still clipped by the relations character budget.
 
+When approved behavioral rules exist, the plugin injects the trigger-matching ones (every turn, query-aware) in a dedicated `## Procedural Rules` block, sanitized and budgeted (default 5 rules / 1500 chars); newly-activated rules are flagged `[NEW]` on the first turn. Override the budget with `AGENT_MEMORY_BUDGET_PROCEDURAL`.
+
 Open conflicts in single-valued lanes are automatically reconciled when either referenced fact is superseded or removed (`consolidate()`, `supersede()`, `forget()`, `forget_stale()`), so `stats()["open_conflicts"]` and `get_conflicts()` do not list stale pairs.
 
-`authorization` facts are never prompt-injected. They can be stored only from `observation` source and remain available for explicit code paths, not automatic prompt context.
+`authorization` facts are never prompt-injected. They can be stored only from `observation` source and remain available for explicit code paths, not automatic prompt context. `procedural` rules are also observation-only, and only human-approved (active) rules are ever injected.
 
 No `/skill` command needed. No manual loading. It just works.
 
@@ -306,7 +352,7 @@ agent-memory-skill/
 
 ## Documentation
 
-- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.5)
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.6)
 - [ROADMAP.md](ROADMAP.md) — milestones and planned work
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
 - [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model

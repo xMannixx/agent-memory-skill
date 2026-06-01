@@ -1,7 +1,7 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, provenance (read-only audit-chain reconstruction), finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, Rebound-Protection, and budgeted German-aware query retrieval."
-version: 3.5.0
+description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, provenance (read-only audit-chain reconstruction), finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, a procedural lane for self-written behavioral rules (observation-only, human review-gate, rule-conflict detection), Rebound-Protection, and budgeted German-aware query retrieval."
+version: 3.6.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
 platforms: [linux, macos]
@@ -16,7 +16,7 @@ metadata:
 Persistent memory system for Hermes Agent with structured Authority Lanes, raw recall snippets, Rebound-Protection, and budgeted plugin retrieval.
 
 Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
-- Authority Lanes (identity / preference / evidence / authorization)
+- Authority Lanes (identity / preference / evidence / authorization / procedural)
 - Rebound-Protection after idle phases (signalfoundry / Moltbook pattern)
 - Class-specific TTL and forget_stale()
 - Finer source trust: five sources with per-lane write policy (`tool`/`external` quarantined to `evidence`; `identity`/`authorization` protected)
@@ -93,6 +93,19 @@ python3 -m pytest tests -v
 | preference    | 14d   | 0.3            | observation, conversation                            | Tone, style, language     |
 | evidence      | 60d   | 0.5            | observation, conversation, inference, tool, external | Quarantine for lower-trust input |
 | authorization | 90d   | 0.9            | observation ONLY                                     | Never from conversation/tool/external |
+| procedural    | 30d   | 0.5            | observation ONLY                                     | Self-written behavioral rules; own table, human review-gate, never auto-active |
+
+## Procedural Lane
+
+Behavioral rules ("how to respond"), kept separate from facts ("what is true")
+in a `procedural_rules` table. Observation-only writes via `propose_rule()`;
+every rule starts `pending` and only `approve_rule()` (a mandatory human gate, no
+auto-approve) makes it active. Deterministic, stdlib-only conflict detection on
+approval hard-blocks direct contradictions and soft-blocks interactions /
+artifact bloat / budget overflow (override with `ack_interactions`). The plugin
+injects only active, trigger-matching rules in a sanitized, budgeted
+`## Procedural Rules` block. CLI: `propose-rule`, `pending-rules`,
+`active-rules`, `approve-rule`, `reject-rule`, `retire-rule`, `rule-conflicts`.
 
 ## Rebound-Protection
 
@@ -242,7 +255,8 @@ No manual loading required.
 - **Timer as compactor only** — writing is event-driven (on `remember()`), not time-based.
 - **authorization only from observation** — prevents privilege escalation via conversation.
 - **authorization never auto-injected** — sensitive permission memory is not placed into prompts by default.
-- **forget_stale() class-aware** — identity: never, preference: 14d, evidence: 60d, authorization: 90d.
+- **forget_stale() class-aware** — identity: never, preference: 14d, evidence: 60d, authorization: 90d; procedural rules expire after 30d (status -> expired).
+- **procedural only from observation, never auto-active** — self-written behavior rules require a human review-gate; only approved rules are injected.
 
 ## References
 

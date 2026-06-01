@@ -7,6 +7,41 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [3.6.0] - 2026-06-02 - Procedural Lane
+
+### Added
+- Fifth authority class `procedural`: self-written behavioral rules stored in a
+  dedicated `procedural_rules` table (plus `rule_conflicts`), separate from
+  facts. Additive migration only (`CREATE TABLE IF NOT EXISTS`).
+- `propose_rule(domain, trigger, effect, behavior_text, ...)`: observation-only;
+  creates a `pending` rule. Non-observation sources and sub-threshold confidence
+  are rejected (`rule_propose_rejected`).
+- `approve_rule(rule_id, ack_interactions=False)`: mandatory human review-gate,
+  no auto-approval. Hard-blocks direct contradictions; soft-blocks interactions,
+  artifact bloat, and per-domain/global budget overflows unless acknowledged.
+- `reject_rule`, `retire_rule`, `get_pending_rules`, `get_active_rules`,
+  `get_active_rules_for_injection` (query-aware, updates match telemetry),
+  `get_rule_conflicts`, `expire_stale_rules`, and `get_meta` / `set_meta`.
+- Deterministic, stdlib-only rule-conflict detection: trigger-overlap plus a
+  structured effect vector; contradiction / interaction / artifact_bloat types.
+- CLI: `propose-rule`, `pending-rules`, `active-rules`, `approve-rule`
+  (`--ack-interactions`, `--by`), `reject-rule`, `retire-rule`, `rule-conflicts`.
+- Plugin: dedicated, sanitized, budgeted `## Procedural Rules` injection block
+  (default 5 rules / 1500 chars, override via `AGENT_MEMORY_BUDGET_PROCEDURAL`)
+  with a first-turn `[NEW]` change-delta tracked via `memory_meta`.
+
+### Security
+- `procedural` is observation-only; `remember(authority_class="procedural")` is
+  rejected (`policy_reject` / `use_procedural_lane`) and routed to `propose_rule`.
+- Only human-approved, active rules are ever injected; rule text is sanitized
+  (code fences, `SYSTEM:` / `ignore previous`, length-capped); rationale and
+  evidence are never injected.
+
+### Changed
+- `forget_stale()` expires procedural rules past their TTL; `stats()` reports
+  `pending_rules`, `active_rules`, and `open_rule_conflicts`.
+- Test suite: 170 tests (was 148).
+
 ## [3.5.0] - 2026-06-01 - Provenance
 
 ### Added

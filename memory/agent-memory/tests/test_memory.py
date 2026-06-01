@@ -2091,5 +2091,218 @@ def test_stats_reports_audit_rows(frozen_mem):
     assert stats["audit_rows"] == len(all_audit_rows)
 
 
+# ==================== PROCEDURAL LANE (v3.6) ====================
+
+
+def _propose(mem, domain="response_style", trigger=None, effect=None,
+             behavior="Keep responses concise.", **kwargs):
+    return mem.propose_rule(
+        domain,
+        trigger if trigger is not None else {"scope": "always"},
+        effect if effect is not None else {"length": "short"},
+        behavior,
+        **kwargs,
+    )
+
+
+def test_propose_rule_creates_pending(mem):
+    rule_id = _propose(mem)
+    assert rule_id and rule_id.startswith("proc:")
+    pending = mem.get_pending_rules()
+    assert [r.id for r in pending] == [rule_id]
+    assert pending[0].status == "pending"
+    assert mem.get_active_rules() == []
+
+
+def test_propose_rule_rejects_non_observation_source(mem):
+    assert _propose(mem, source="conversation") is None
+    assert _propose(mem, source="external") is None
+    assert mem.get_pending_rules() == []
+
+
+def test_propose_rule_rejects_low_confidence(mem):
+    assert _propose(mem, confidence=0.1) is None
+    assert mem.get_pending_rules() == []
+
+
+def test_remember_rejects_procedural_authority_class(mem):
+    result = mem.remember(
+        "Should not become a fact",
+        authority_class="procedural",
+        source="observation",
+        confidence=1.0,
+    )
+    assert result is None
+    audit = mem.get_audit(op="policy_reject", limit=10)
+    assert any(e["reason"] == "use_procedural_lane" for e in audit)
+
+
+def test_approve_rule_activates(mem):
+    rule_id = _propose(mem)
+    result = mem.approve_rule(rule_id, approved_by="manni")
+    assert result["approved"] is True
+    active = mem.get_active_rules()
+    assert [r.id for r in active] == [rule_id]
+    assert active[0].status == "approved"
+    assert active[0].approved_at is not None
+    assert active[0].expires_at is not None
+
+
+def test_approve_rule_no_auto_approve_for_unknown(mem):
+    assert mem.approve_rule("proc:doesnotexist")["approved"] is False
+
+
+def test_reject_rule(mem):
+    rule_id = _propose(mem)
+    assert mem.reject_rule(rule_id, "too broad") is True
+    assert mem.get_pending_rules() == []
+    assert mem.get_active_rules() == []
+    # already-rejected cannot be approved
+    assert mem.approve_rule(rule_id)["approved"] is False
+
+
+def test_retire_rule(mem):
+    rule_id = _propose(mem)
+    mem.approve_rule(rule_id)
+    assert mem.retire_rule(rule_id) is True
+    assert mem.get_active_rules() == []
+
+
+def test_approve_blocks_direct_contradiction(mem):
+    a = _propose(
+        mem, domain="code_policy",
+        trigger={"scope": "conditional", "task_class": ["technical"]},
+        effect={"code": "include"},
+        behavior="Include code for technical questions.",
+    )
+    mem.approve_rule(a)
+    b = _propose(
+        mem, domain="code_policy",
+        trigger={"scope": "always"},
+        effect={"code": "omit"},
+        behavior="Never include code.",
+    )
+    result = mem.approve_rule(b)
+    assert result["approved"] is False
+    assert result["reason"] == "contradiction"
+    # ack cannot override a contradiction
+    assert mem.approve_rule(b, ack_interactions=True)["approved"] is False
+    conflicts = mem.get_rule_conflicts()
+    assert any(c["conflict_type"] == "contradiction" for c in conflicts)
+
+
+def test_approve_interaction_needs_ack(mem):
+    a = _propose(
+        mem, domain="response_style", effect={"length": "short"},
+        behavior="Keep answers short.",
+    )
+    mem.approve_rule(a)
+    b = _propose(
+        mem, domain="response_style", effect={"tone": "formal"},
+        behavior="Use a formal tone.",
+    )
+    blocked = mem.approve_rule(b)
+    assert blocked["approved"] is False
+    assert blocked["reason"] == "needs_ack"
+    acked = mem.approve_rule(b, ack_interactions=True)
+    assert acked["approved"] is True
+
+
+def test_approve_blocks_artifact_bloat(mem):
+    # Different domains sharing a trigger context: no same-domain interaction,
+    # but cumulative artifact_cost is the drift signal we want to surface.
+    trig = {"scope": "conditional", "task_class": ["technical"]}
+    a = mem.propose_rule("code_policy", trig, {"artifact_cost": 2},
+                         "Include runnable code.")
+    b = mem.propose_rule("format_structure", trig, {"artifact_cost": 2},
+                         "Include a results table.")
+    c = mem.propose_rule("response_style", trig, {"artifact_cost": 2},
+                         "Include a detailed walkthrough.")
+    assert mem.approve_rule(a)["approved"] is True
+    assert mem.approve_rule(b)["approved"] is True  # cumulative 4, at budget
+    # third pushes cumulative cost (6) over budget (4)
+    blocked = mem.approve_rule(c)
+    assert blocked["approved"] is False
+    assert blocked["reason"] == "needs_ack"
+    bloat = [x for x in mem.get_rule_conflicts()
+             if x["conflict_type"] == "artifact_bloat"]
+    assert bloat
+    assert mem.approve_rule(c, ack_interactions=True)["approved"] is True
+
+
+def test_domain_budget_enforced(mem):
+    # language budget is 1
+    a = _propose(mem, domain="language", trigger={"scope": "conditional",
+                 "task_class": ["theory"]}, effect={"language": "de"},
+                 behavior="Answer theory in German.")
+    b = _propose(mem, domain="language", trigger={"scope": "conditional",
+                 "task_class": ["code"]}, effect={"language": "en"},
+                 behavior="Answer code in English.")
+    assert mem.approve_rule(a)["approved"] is True
+    blocked = mem.approve_rule(b)
+    assert blocked["approved"] is False
+    assert any(x["type"] == "domain_budget" for x in blocked["budget"])
+    assert mem.approve_rule(b, ack_interactions=True)["approved"] is True
+
+
+def test_supersede_via_previous_rule_id(mem):
+    a = _propose(mem, behavior="Short answers.")
+    mem.approve_rule(a)
+    b = _propose(mem, effect={"length": "very_short"},
+                 behavior="Very short answers.", previous_rule_id=a)
+    assert mem.approve_rule(b)["approved"] is True
+    active_ids = {r.id for r in mem.get_active_rules()}
+    assert b in active_ids
+    assert a not in active_ids
+
+
+def test_get_active_rules_for_injection_query_aware(mem):
+    always = _propose(mem, behavior="Always concise.")
+    mem.approve_rule(always)
+    tech = _propose(
+        mem, domain="code_policy",
+        trigger={"scope": "conditional", "keywords": ["code", "bug"]},
+        effect={"code": "include"}, behavior="Include code.",
+    )
+    mem.approve_rule(tech)
+
+    non_match = mem.get_active_rules_for_injection(query="tell me about cooking")
+    assert {r.id for r in non_match} == {always}
+
+    match = mem.get_active_rules_for_injection(query="how to fix this code bug")
+    assert {r.id for r in match} == {always, tech}
+
+    # telemetry updated
+    refreshed = {r.id: r for r in mem.get_active_rules()}
+    assert refreshed[tech].match_count >= 1
+    assert refreshed[tech].last_matched_at is not None
+
+
+def test_forget_stale_expires_rules(frozen_mem):
+    rule_id = frozen_mem.propose_rule(
+        "response_style", {"scope": "always"}, {"length": "short"},
+        "Keep concise.",
+    )
+    frozen_mem.approve_rule(rule_id)
+    assert len(frozen_mem.get_active_rules()) == 1
+
+    # jump beyond the 30-day procedural TTL
+    frozen_mem.set_now(datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc))
+    result = frozen_mem.forget_stale()
+    assert result["procedural"] == 1
+    assert frozen_mem.get_active_rules() == []
+
+
+def test_stats_reports_procedural(mem):
+    a = _propose(mem)
+    mem.approve_rule(a)
+    _propose(mem, domain="code_policy", effect={"code": "include"},
+             behavior="Include code.")  # stays pending
+    stats = mem.stats()
+    assert stats["active_rules"] == 1
+    assert stats["pending_rules"] == 1
+    assert "open_rule_conflicts" in stats
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

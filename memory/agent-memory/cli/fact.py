@@ -2,6 +2,7 @@
 """CLI wrapper for AgentMemory — Hermes Edition."""
 
 import sys
+import json
 import argparse
 from pathlib import Path
 
@@ -169,6 +170,56 @@ def main():
     # doctor
     subparsers.add_parser("doctor", help="Diagnose memory/plugin setup")
 
+    # ---------- procedural lane (v3.6) ----------
+    propose_p = subparsers.add_parser(
+        "propose-rule", help="Propose a behavioral rule (pending review)"
+    )
+    propose_p.add_argument("--domain", required=True,
+                           help="e.g. response_style, code_policy, language")
+    propose_p.add_argument("--trigger", default="{}",
+                           help='JSON, e.g. {"scope":"always"} or '
+                                '{"scope":"conditional","task_class":["technical"]}')
+    propose_p.add_argument("--effect", default="{}",
+                           help='JSON, e.g. {"length":"short","code":"include"}')
+    propose_p.add_argument("--behavior", required=True,
+                           help="Canonical behavior text injected into the prompt")
+    propose_p.add_argument("--evidence-fact", action="append", default=[],
+                           dest="evidence_facts", help="Evidence fact id (repeatable)")
+    propose_p.add_argument("--rationale", default=None)
+    propose_p.add_argument("--priority", type=int, default=50)
+    propose_p.add_argument("--confidence", type=float, default=0.5)
+    propose_p.add_argument("--source", default="observation")
+    propose_p.add_argument("--tags", nargs="*", default=None)
+    propose_p.add_argument("--previous", default=None, dest="previous_rule_id",
+                           help="Rule id this proposal supersedes on approval")
+
+    subparsers.add_parser("pending-rules", help="List rules awaiting review")
+
+    active_rules_p = subparsers.add_parser(
+        "active-rules", help="List approved (active) rules"
+    )
+    active_rules_p.add_argument("--domain", default=None)
+
+    approve_p = subparsers.add_parser("approve-rule", help="Approve a pending rule")
+    approve_p.add_argument("rule_id")
+    approve_p.add_argument("--ack-interactions", action="store_true",
+                           dest="ack_interactions",
+                           help="Override interaction/budget blocks (not contradictions)")
+    approve_p.add_argument("--by", default=None, dest="approved_by")
+
+    reject_p = subparsers.add_parser("reject-rule", help="Reject a pending rule")
+    reject_p.add_argument("rule_id")
+    reject_p.add_argument("reason")
+
+    retire_p = subparsers.add_parser("retire-rule", help="Retire an active rule")
+    retire_p.add_argument("rule_id")
+
+    rule_conflicts_p = subparsers.add_parser(
+        "rule-conflicts", help="List behavioral rule conflicts"
+    )
+    rule_conflicts_p.add_argument("--all", action="store_true",
+                                  help="Include resolved conflicts")
+
     args = parser.parse_args()
     mem = AgentMemory(db_path=args.db)
 
@@ -225,6 +276,9 @@ def main():
         print(f"Entities:         {s['entities']}")
         print(f"Relations:        {s['relations']}")
         print(f"Open Conflicts:   {s['open_conflicts']}")
+        print(f"Pending rules:    {s['pending_rules']}")
+        print(f"Active rules:     {s['active_rules']}")
+        print(f"Open rule confl.: {s['open_rule_conflicts']}")
         print(f"Audit rows:       {s['audit_rows']}")
         print(f"Rebound active:   {s['rebound_active']}")
         print(f"Rebound remaining: {s['rebound_remaining']}")
@@ -415,6 +469,98 @@ def main():
         plugin_path = Path(__file__).parents[3] / "plugin" / "__init__.py"
         plugin_status = "present" if plugin_path.exists() else "missing"
         print(f"Plugin file:      {plugin_path} ({plugin_status})")
+
+    elif args.command == "propose-rule":
+        try:
+            trigger = json.loads(args.trigger)
+            effect = json.loads(args.effect)
+        except json.JSONDecodeError as exc:
+            print(f"ERROR — invalid JSON in --trigger/--effect: {exc}")
+            return
+        rule_id = mem.propose_rule(
+            args.domain, trigger, effect, args.behavior,
+            source=args.source,
+            evidence_fact_ids=args.evidence_facts,
+            rationale=args.rationale,
+            priority=args.priority,
+            confidence=args.confidence,
+            tags=args.tags,
+            previous_rule_id=args.previous_rule_id,
+        )
+        if rule_id:
+            print(f"OK [{rule_id}] pending review: {args.behavior[:60]}")
+        else:
+            print("REJECTED — observation-only source or confidence policy")
+
+    elif args.command == "pending-rules":
+        rules = mem.get_pending_rules()
+        if not rules:
+            print("No pending rules.")
+        for r in rules:
+            print(
+                f"[{r.id}] ({r.domain}, prio={r.priority}, "
+                f"cost={r.artifact_cost}) {r.behavior_text}"
+            )
+
+    elif args.command == "active-rules":
+        rules = mem.get_active_rules(domain=args.domain)
+        if not rules:
+            print("No active rules.")
+        for r in rules:
+            expires = f" expires={r.expires_at[:10]}" if r.expires_at else ""
+            print(
+                f"[{r.id}] ({r.domain}, prio={r.priority}){expires} "
+                f"{r.behavior_text}"
+            )
+
+    elif args.command == "approve-rule":
+        result = mem.approve_rule(
+            args.rule_id,
+            approved_by=args.approved_by,
+            ack_interactions=args.ack_interactions,
+        )
+        if result["approved"]:
+            note = ""
+            if result.get("interactions") or result.get("budget"):
+                note = " (interactions/budget acknowledged)"
+            print(f"OK approved [{result['rule_id']}]{note}")
+        elif result["reason"] == "contradiction":
+            print("BLOCKED — direct contradiction (cannot be overridden):")
+            for c in result["conflicts"]:
+                print(f"  vs {c['other_id']} on {c['dimension']}: {c['reason']}")
+        elif result["reason"] == "needs_ack":
+            print("BLOCKED — needs --ack-interactions:")
+            for c in result.get("interactions", []):
+                print(f"  {c['conflict_type']} vs {c['other_id']}: {c['reason']}")
+            for b in result.get("budget", []):
+                print(f"  budget: {b}")
+        else:
+            print(f"NOT APPROVED — {result['reason']}")
+
+    elif args.command == "reject-rule":
+        if mem.reject_rule(args.rule_id, args.reason):
+            print(f"OK rejected [{args.rule_id}]")
+        else:
+            print(f"ERROR — {args.rule_id} not found or not pending")
+
+    elif args.command == "retire-rule":
+        if mem.retire_rule(args.rule_id):
+            print(f"OK retired [{args.rule_id}]")
+        else:
+            print(f"ERROR — {args.rule_id} not found or not active")
+
+    elif args.command == "rule-conflicts":
+        conflicts = mem.get_rule_conflicts(include_resolved=args.all)
+        if not conflicts:
+            print("No rule conflicts.")
+        for c in conflicts:
+            status = "resolved" if c["resolved"] else "open"
+            dim = f" dim={c['dimension']}" if c["dimension"] else ""
+            print(
+                f"[{c['id']}] {status} {c['conflict_type']}{dim} "
+                f"{c['rule_a']} <-> {c['rule_b']}"
+            )
+            print(f"  {c['reason']}")
 
     elif args.command == "snippet":
         if args.snippet_command == "add":

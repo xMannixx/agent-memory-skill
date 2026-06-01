@@ -19,6 +19,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | v3.3 - Neighbor Attributes | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
 | v3.4 - Source Trust | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
 | v3.5 - Provenance | Read-only provenance view derived from the append-only audit log; `get_provenance()` and CLI `provenance` command. | Complete |
+| v3.6 - Procedural Lane | Fifth authority class for self-written behavioral rules: observation-only writes, a mandatory human review-gate (no auto-approve), deterministic rule-conflict / artifact-bloat detection, and bounded, query-aware prompt injection. | Complete |
 
 ## Priority Tiers
 
@@ -41,7 +42,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | 6 | [#8 `feat(core): exponential confidence decay per authority lane`](https://github.com/xMannixx/agent-memory-skill/issues/8) | v1.4 | `tier:high-value` | `area:core`, `area:schema` | Closed |
 | 7 | [#9 `fix(core): make remember idempotent via content-hash IDs`](https://github.com/xMannixx/agent-memory-skill/issues/9) | v1.2 | `tier:must-do` | `area:core` | Closed |
 | 8 | [#10 `feat(schema): namespaces for multi-user and multi-agent memory`](https://github.com/xMannixx/agent-memory-skill/issues/10) | Backlog | `tier:polish` | `area:schema` | Open |
-| 22 | [#30 `feat(core): procedural authority lane with mandatory review-gate and rule-conflict detection`](https://github.com/xMannixx/agent-memory-skill/issues/30) | Backlog | `tier:exploratory` | `area:core`, `area:security` | Open (deferred — needs usage data) |
+| 22 | [#30 `feat(core): procedural authority lane with mandatory review-gate and rule-conflict detection`](https://github.com/xMannixx/agent-memory-skill/issues/30) | v3.6 | `tier:exploratory` | `area:core`, `area:security` | Shipped (lean MVP; synthesized from the swarm RFC) |
 | 9 | [#11 `feat(core): self-observability stats and latency counters`](https://github.com/xMannixx/agent-memory-skill/issues/11) | v1.3 | `tier:polish` | `area:core`, `area:cli` | Closed |
 | 10 | [#12 `perf(schema): add facts and lessons indexes and enable WAL`](https://github.com/xMannixx/agent-memory-skill/issues/12) | v1.2 | `tier:must-do` | `area:schema` | Closed |
 | 11 | [#13 `feat(core): lesson and entity lifecycle with decay on use`](https://github.com/xMannixx/agent-memory-skill/issues/13) | v1.2 | `tier:polish` | `area:core`, `area:schema` | Closed |
@@ -161,12 +162,56 @@ audit log remains the single source of truth.
 3. **Design note** — Provenance is derived from the audit log; there is
    intentionally no duplicate `provenance_chain` storage.
 
-Deferred items: a procedural authority lane with a mandatory review-gate and
-rule-conflict detection ([#30](https://github.com/xMannixx/agent-memory-skill/issues/30) —
-deferred until 2-3 real v3.2+ sessions provide usage data on which behavior
-rules Hermes would actually write); async consolidation; multi-factor retrieval
-ranking; OpenTelemetry observability; and multi-agent namespaces
-([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+Deferred items (now partly addressed by v3.6): async consolidation;
+multi-factor retrieval ranking; OpenTelemetry observability; and multi-agent
+namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.6 - Procedural Lane
+
+A fifth authority class, `procedural`, stores self-written **behavioral rules**
+(how the agent should respond) separately from facts (what is true). Rules are
+self-modifying behavior code, so they get a review-gate, conflict detection,
+bounded injection, and expiry — not just a confidence score. The design
+synthesizes a multi-model "swarm" RFC; the brief and the comparison of the
+proposals live in [docs/briefs/procedural-lane-rfc.md](docs/briefs/procedural-lane-rfc.md)
+and the `procedural-lane-rfc-comparison` canvas. This is a deliberately lean MVP
+of that design.
+
+1. **Observation-only writes, never auto-active** — `propose_rule()` accepts
+   rules only from `source="observation"` (the agent can surface candidates but
+   cannot write free-form self-instructions into the prompt). Every rule starts
+   `pending`. `approve_rule()` is a mandatory human gate: there is no
+   auto-approval regardless of confidence. `remember(authority_class="procedural")`
+   is rejected and routed here (`policy_reject` / `use_procedural_lane`).
+2. **Deterministic conflict detection (stdlib-only)** — On approval, a candidate
+   is checked against active rules using trigger-overlap plus a structured
+   effect vector. **Direct contradictions** (opposite values on the same effect
+   dimension with overlapping triggers) hard-block activation and cannot be
+   overridden. **Interactions** (same domain) and **artifact bloat** (cumulative
+   `artifact_cost` over budget — the dominant real-world drift class) soft-block
+   unless explicitly acknowledged. Conflicts are recorded in `rule_conflicts`
+   and audited.
+3. **Drift containment** — Per-domain budgets (`PROCEDURAL_DOMAIN_BUDGET`), a
+   global active-rule cap, a 30-day TTL with re-approval, and supersession via
+   `previous_rule_id` keep accumulation visible and bounded. `forget_stale()`
+   expires rules past their TTL.
+4. **Bounded, query-aware injection** — The plugin injects a dedicated
+   `## Procedural Rules` block (default budget 5 rules / 1500 chars) containing
+   only active rules whose trigger matches the turn. Rule text is sanitized
+   (code fences, `SYSTEM:`/`ignore previous`, length-capped); rationale and
+   evidence are never injected. On the first turn, newly-activated rules are
+   flagged `[NEW]` (an injection delta tracked via a `memory_meta` hash) so
+   behavioral drift is visible as it enters the prompt.
+5. **CLI** — `propose-rule`, `pending-rules`, `active-rules`, `approve-rule`
+   (`--ack-interactions`), `reject-rule`, `retire-rule`, `rule-conflicts`;
+   `stats` now reports `pending_rules`, `active_rules`, and `open_rule_conflicts`.
+
+Additive migration only (`CREATE TABLE IF NOT EXISTS procedural_rules` /
+`rule_conflicts`); no breaking changes. Deferred from the full RFC: a separate
+observation-events pipeline, rule-set version snapshots, precedence
+cycle-detection, and auto-demotion of unused rules (match telemetry is captured
+via `match_count` / `last_matched_at` as the foundation). Still open:
+multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 
