@@ -14,12 +14,12 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v2.0 - Smart Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/4) | Add richer retrieval paths: recall memory, smarter plugin injection. | Complete |
 | [v2.1 - Hardening & Polish](https://github.com/xMannixx/agent-memory-skill/milestone/5) | Reliability and publishability: audit-log retention, plugin diagnostics, English code/CLI/prompt standardization. | Complete |
 | [v3.0 - German-Aware Retrieval](https://github.com/xMannixx/agent-memory-skill/milestone/6) | Deterministic German-aware retrieval: token-prefix FTS + synonyms, fold/stem scoring (boost not gate), and a measurable eval harness. | Complete |
-| v3.1 - Conflict & Relations | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
-| v3.2 - Relation-Aware Recall | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
-| v3.3 - Neighbor Attributes | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
-| v3.4 - Source Trust | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
-| v3.5 - Provenance | Read-only provenance view derived from the append-only audit log; `get_provenance()` and CLI `provenance` command. | Complete |
-| v3.6 - Procedural Lane | Fifth authority class for self-written behavioral rules: observation-only writes, a mandatory human review-gate (no auto-approve), deterministic rule-conflict / artifact-bloat detection, and bounded, query-aware prompt injection. | Complete |
+| [v3.1 - Conflict & Relations](https://github.com/xMannixx/agent-memory-skill/milestone/7) | Non-blocking conflict detection on single-valued authority lanes; lightweight entity relation graph (stdlib-only). | Complete |
+| [v3.2 - Relation-Aware Recall](https://github.com/xMannixx/agent-memory-skill/milestone/8) | 1-hop relation expansion in the plugin on query turns (edge-only, budgeted). | Complete |
+| [v3.3 - Neighbor Attributes](https://github.com/xMannixx/agent-memory-skill/milestone/9) | Opt-in neighbor attribute injection on relation lines; conflict auto-reconciliation when referenced facts become inactive. | Complete |
+| [v3.4 - Source Trust](https://github.com/xMannixx/agent-memory-skill/milestone/10) | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
+| [v3.5 - Provenance](https://github.com/xMannixx/agent-memory-skill/milestone/11) | Read-only provenance view derived from the append-only audit log; `get_provenance()` and CLI `provenance` command. | Complete |
+| [v3.6 - Procedural Lane](https://github.com/xMannixx/agent-memory-skill/milestone/12) | Fifth authority class for self-written behavioral rules: observation-only writes, a mandatory human review-gate (no auto-approve), deterministic rule-conflict / artifact-bloat detection, and bounded, query-aware prompt injection. | Complete |
 
 ## Priority Tiers
 
