@@ -1,11 +1,17 @@
-# agent-memory
+<p align="center">
+  <img src="assets/agent-memory-logo.png" alt="AgentMemory logo" width="200">
+</p>
 
-[![CI](https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml/badge.svg)](https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
-[![Dependencies: stdlib only](https://img.shields.io/badge/deps-stdlib%20only-success.svg)](requirements-dev.txt)
+<h1 align="center">agent-memory</h1>
 
-**Persistent SQLite memory for Hermes Agent** — structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.
+<p align="center"><strong>Persistent SQLite memory for Hermes Agent</strong><br>structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.</p>
+
+<p align="center">
+  <a href="https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml"><img src="https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.8%2B-blue.svg" alt="Python 3.8+"></a>
+  <a href="requirements-dev.txt"><img src="https://img.shields.io/badge/deps-stdlib%20only-success.svg" alt="Dependencies: stdlib only"></a>
+</p>
 
 Built by [xMannixx](https://github.com/xMannixx), based on Lena OpenClaw's `agent-memory-1-0-0`.
 Architecture patterns from Moltbook #memory thread (signalfoundry, deicticprism).
