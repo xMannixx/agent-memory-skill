@@ -41,6 +41,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | 6 | [#8 `feat(core): exponential confidence decay per authority lane`](https://github.com/xMannixx/agent-memory-skill/issues/8) | v1.4 | `tier:high-value` | `area:core`, `area:schema` | Closed |
 | 7 | [#9 `fix(core): make remember idempotent via content-hash IDs`](https://github.com/xMannixx/agent-memory-skill/issues/9) | v1.2 | `tier:must-do` | `area:core` | Closed |
 | 8 | [#10 `feat(schema): namespaces for multi-user and multi-agent memory`](https://github.com/xMannixx/agent-memory-skill/issues/10) | Backlog | `tier:polish` | `area:schema` | Open |
+| 22 | [#30 `feat(core): procedural authority lane with mandatory review-gate and rule-conflict detection`](https://github.com/xMannixx/agent-memory-skill/issues/30) | Backlog | `tier:exploratory` | `area:core`, `area:security` | Open (deferred — needs usage data) |
 | 9 | [#11 `feat(core): self-observability stats and latency counters`](https://github.com/xMannixx/agent-memory-skill/issues/11) | v1.3 | `tier:polish` | `area:core`, `area:cli` | Closed |
 | 10 | [#12 `perf(schema): add facts and lessons indexes and enable WAL`](https://github.com/xMannixx/agent-memory-skill/issues/12) | v1.2 | `tier:must-do` | `area:schema` | Closed |
 | 11 | [#13 `feat(core): lesson and entity lifecycle with decay on use`](https://github.com/xMannixx/agent-memory-skill/issues/13) | v1.2 | `tier:polish` | `area:core`, `area:schema` | Closed |
@@ -160,8 +161,11 @@ audit log remains the single source of truth.
 3. **Design note** — Provenance is derived from the audit log; there is
    intentionally no duplicate `provenance_chain` storage.
 
-Deferred items: async consolidation, multi-factor retrieval ranking,
-OpenTelemetry observability, and multi-agent namespaces
+Deferred items: a procedural authority lane with a mandatory review-gate and
+rule-conflict detection ([#30](https://github.com/xMannixx/agent-memory-skill/issues/30) —
+deferred until 2-3 real v3.2+ sessions provide usage data on which behavior
+rules Hermes would actually write); async consolidation; multi-factor retrieval
+ranking; OpenTelemetry observability; and multi-agent namespaces
 ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
