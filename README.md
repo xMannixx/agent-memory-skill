@@ -63,7 +63,8 @@ Credit: signalfoundry on Moltbook #memory
 
 - Hermes Agent (any recent version)
 - Python 3.8+
-- No external dependencies — pure stdlib (`sqlite3`, `json`, `hashlib`)
+- No external runtime dependencies — pure stdlib (`sqlite3`, `json`, `hashlib`, `re`)
+- Development only: `pytest` (see [requirements-dev.txt](requirements-dev.txt))
 
 ### Steps
 
@@ -74,11 +75,13 @@ cd agent-memory-skill
 
 # 2. Copy the memory module
 HERMES=~/.hermes
-mkdir -p $HERMES/agent-memory/{src,cli,tests}
-cp memory/agent-memory/src/memory.py $HERMES/agent-memory/src/
-cp memory/agent-memory/cli/fact.py   $HERMES/agent-memory/cli/
-cp memory/agent-memory/tests/test_memory.py $HERMES/agent-memory/tests/
-cp memory/agent-memory/tests/test_plugin.py $HERMES/agent-memory/tests/
+mkdir -p $HERMES/agent-memory/{src,cli,tests/fixtures}
+cp memory/agent-memory/src/memory.py    $HERMES/agent-memory/src/
+cp memory/agent-memory/src/text_norm.py $HERMES/agent-memory/src/
+cp memory/agent-memory/src/synonyms.json $HERMES/agent-memory/src/
+cp memory/agent-memory/cli/fact.py      $HERMES/agent-memory/cli/
+cp memory/agent-memory/tests/*.py        $HERMES/agent-memory/tests/
+cp memory/agent-memory/tests/fixtures/retrieval_eval.json $HERMES/agent-memory/tests/fixtures/
 
 # 3. Install the auto-injection plugin
 mkdir -p $HERMES/plugins/agent-memory-plugin
@@ -257,6 +260,17 @@ agent-memory-skill/
     ├── __init__.py                           # Auto-injection hook
     └── plugin.yaml                           # Plugin manifest
 ```
+
+---
+
+## Documentation
+
+- [CHANGELOG.md](CHANGELOG.md) — release history (v1.1 through v3.0)
+- [ROADMAP.md](ROADMAP.md) — milestones and planned work
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, commit and PR conventions
+- [SECURITY.md](SECURITY.md) — how to report vulnerabilities and the memory threat model
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community expectations
+- [memory/agent-memory/references/architecture.md](memory/agent-memory/references/architecture.md) — design rationale
 
 ---
 

@@ -1,0 +1,8 @@
+# Development dependencies only.
+# The runtime (memory.py, text_norm.py, plugin) uses the Python standard
+# library exclusively and has NO runtime dependencies.
+#
+# Install with:
+#   pip install -r requirements-dev.txt
+
+pytest>=7.0

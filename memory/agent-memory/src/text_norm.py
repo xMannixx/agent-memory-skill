@@ -5,6 +5,8 @@ They are designed to make scoring and overlap checks a little more forgiving,
 not to provide linguistically complete German stemming.
 """
 
+from __future__ import annotations
+
 import re
 
 

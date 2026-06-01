@@ -1,0 +1,94 @@
+# Changelog
+
+All notable changes to this project are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
+links the issues it closed.
+
+## [3.0.0] - 2026-06-01 - German-Aware Retrieval
+
+### Added
+- German-aware normalization module `text_norm.py`: umlaut folding
+  (`ae/oe/ue/ss`), a lightweight attribution-free German suffix stemmer, query
+  tokenization, and synonym expansion (#21).
+- Editable synonym map `synonyms.json` used to widen recall (#21).
+- `_smart_fts_query`: builds an unquoted token-prefix FTS query (`server*`)
+  plus synonym expansion so `Server` matches `Serverkonfiguration` and
+  `wie laeuft die Infrastruktur` reaches the VPS/Nginx fact (#21).
+- Retrieval eval harness `tests/test_retrieval_eval.py` with a self-contained
+  fixture (`positives`, `hard_negatives`, `regressions`) measuring recall@3 and
+  a precision guard (#23).
+
+### Changed
+- Plugin relevance: replaced the binary first-5-characters gate with
+  score-based ranking (`_rank_relevant_facts`) that preserves BM25 order and
+  never drops candidates; the per-lane budget is the only hard cut (#22).
+
+## [2.1.0] - 2026-06-01 - Hardening & Polish
+
+### Added
+- Audit-log retention: `AUDIT_RETENTION_DAYS`, `forget_old_audit()`,
+  `audit_rows` in `stats()`, and an `audit-prune` CLI command (#18).
+- Plugin import diagnostics: failures are logged with the resolved source path,
+  plus a `memory_status()` helper and a CLI `doctor` command (#19).
+
+### Changed
+- Standardized all code comments, docstrings, CLI strings, and injected prompt
+  headers to English (#20).
+
+## [2.0.0] - 2026-05-30 - Smart Retrieval (local-first)
+
+### Added
+- Recall snippet lane: raw conversation snippets stored separately from
+  distilled semantic facts, with their own FTS and TTL (#3).
+- Query-aware retrieval: later turns retrieve query-relevant evidence instead of
+  re-injecting a static baseline (#7).
+- Token budgeting: per-lane character limits for injected context, with
+  `authorization` facts explicitly never injected (#15).
+
+## [1.4.0] - 2026-05-30 - Consolidation & Decay
+
+### Added
+- `consolidate` command to merge related facts into a stronger representative
+  and supersede duplicates (#4).
+- Exponential confidence decay per authority lane via `half_life_days` (#8).
+
+## [1.3.0] - 2026-05-20 - Audit & Recovery
+
+### Added
+- Audit log, database snapshots with restore, and rapid-change write anomaly
+  detection (#6).
+- Self-observability stats and recall latency counters (#11).
+
+## [1.2.0] - 2026-05-20 - Stability & Hygiene
+
+### Added
+- Lesson and entity lifecycle with access tracking and decay on use (#13).
+- File-DB coverage and frozen-time test helpers (#16).
+
+### Changed
+- Made `remember` idempotent via content-hash IDs (#9).
+- Small correctness and hygiene cleanups across the core (#17).
+
+### Performance
+- Added facts and lessons indexes and enabled SQLite WAL mode (#12).
+
+### Fixed
+- Hardened memory TTL handling and storage cleanup.
+
+## [1.1.0] - 2026-05-06 - Initial release
+
+### Added
+- Initial `AgentMemory`: four Authority Lanes (identity / preference / evidence
+  / authorization) with per-lane TTL and source policy.
+- Rebound-Protection to cap memory intake after idle phases.
+- Auto-injection plugin for Hermes and a CLI for managing memory.
+
+[3.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/6
+[2.1.0]: https://github.com/xMannixx/agent-memory-skill/milestone/5
+[2.0.0]: https://github.com/xMannixx/agent-memory-skill/milestone/4
+[1.4.0]: https://github.com/xMannixx/agent-memory-skill/milestone/3
+[1.3.0]: https://github.com/xMannixx/agent-memory-skill/milestone/2
+[1.2.0]: https://github.com/xMannixx/agent-memory-skill/milestone/1
