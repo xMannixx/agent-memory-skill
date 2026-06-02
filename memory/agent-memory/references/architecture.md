@@ -242,3 +242,46 @@ and a keeper shows what it superseded. Unknown ids return an empty list.
 There is intentionally **no** duplicate `provenance_chain` storage — the audit
 log is the single source of truth. The CLI `provenance <fact_id>` command prints
 one line per event (timestamp, operation, source, reason).
+
+## Procedural Lane
+
+The `procedural` lane stores self-written **behavioral rules** (how to respond),
+kept in their own `procedural_rules` table — never in `facts`. Rules are
+self-modifying behavior code, so they get a stricter lifecycle than facts:
+review-gate, deterministic conflict detection, bounded injection, and expiry.
+
+Write path: `propose_rule()` accepts `source="observation"` only and creates a
+`pending` rule. `remember(authority_class="procedural")` is rejected
+(`policy_reject` / `use_procedural_lane`) so the facts lane can't be misused.
+
+**Lifecycle / status semantics (important):** the stored states are `pending`,
+`approved`, `rejected`, `retired`, `superseded`, and `expired`. There is **no
+separate `active` status** — a rule is "active" (injectable) iff
+`status == 'approved'` and it has not expired. This is deliberate: the core is
+stateless and session-less, and the plugin injects approved rules every turn
+(query-aware), so **approval is activation**. The RFC's
+`approved -> active at session boundary` transition is intentionally collapsed.
+If a session concept is added later, introduce a distinct `active` status rather
+than overloading `approved`. `get_active_rules()` encodes this rule.
+
+Conflict detection (on `approve_rule()`, deterministic, no embeddings/LLM): a
+candidate is compared to active rules via trigger-overlap plus a structured
+effect vector. **Direct contradictions** (opposite values on the same effect
+dimension) hard-block activation and cannot be overridden. **Interactions**
+(same domain) and **artifact bloat** (cumulative `artifact_cost` over budget)
+soft-block unless approved with `ack_interactions=True`. Conflicts are recorded
+in `rule_conflicts`.
+
+Drift containment: per-domain budgets (`PROCEDURAL_DOMAIN_BUDGET`), a global
+active-rule cap, a 30-day TTL with re-approval, and supersession via
+`previous_rule_id`. `forget_stale()` expires rules past their TTL.
+
+Injection: the plugin emits a dedicated, sanitized, budgeted `## Procedural
+Rules` block (only trigger-matching active rules; rationale and evidence are
+never injected). A first-turn `[NEW]` delta is tracked via a `memory_meta` hash.
+
+**Deferred (not in v3.6):** a structured observation-event pipeline with a
+signal enum and templates (so the rule body is generated rather than passed as
+free `behavior_text`, with free text only as review rationale); rule-set version
+snapshots; precedence cycle-detection; and auto-demotion of unused rules
+(`match_count` / `last_matched_at` are captured as the foundation).

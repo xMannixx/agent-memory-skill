@@ -2919,6 +2919,16 @@ class AgentMemory:
 
     def get_active_rules(self, domain: Optional[str] = None
                          ) -> List[ProceduralRule]:
+        """Active (injectable) rules.
+
+        Note on lifecycle semantics: there is no separate 'active' status.
+        A rule is "active" iff status == 'approved' and it has not expired.
+        This is a deliberate choice for a stateless, session-less core: the
+        plugin injects approved rules every turn (query-aware), so approval is
+        activation. The RFC's 'approved -> active at session boundary' step is
+        intentionally collapsed; if a session concept is later added, introduce
+        a distinct 'active' status here rather than overloading 'approved'.
+        """
         conn, should_close = self._connect()
         cursor = conn.cursor()
         sql = (f"SELECT {self._PROC_COLUMNS} FROM procedural_rules "
