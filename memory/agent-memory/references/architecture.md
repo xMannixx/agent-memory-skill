@@ -118,13 +118,13 @@ useful at recall time, not only via CLI.
   between the user message and tracked entity names. For each matched entity,
   direct (1-hop) relations are fetched via `get_relations(..., direction="both")`.
 - **Edge-only:** Only relation edges are injected (e.g.
-  `- Manni --arbeitet_bei--> Arriva`), never facts. Authorization content
+  `- Alex --arbeitet_bei--> Acme`), never facts. Authorization content
   cannot leak through this path.
 - **Neighbor attributes (opt-in):** When `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is
   set to an integer N > 0 (default `0` = disabled), up to N of each neighbor
   entity's stored attributes (`key=value` pairs, sorted by key) are appended to
   that relation line, e.g.
-  `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`. With
+  `- Alex --arbeitet_bei--> Acme [location=Example City; type=logistics]`. With
   `0`, behavior matches v3.2 (edges only). Attribute text is still bounded by
   the existing `relations` section character budget.
 - **Bounded:** Output is clipped by a dedicated `relations` budget (default:
@@ -213,7 +213,7 @@ for superseded or deleted facts.
 ## Entity Relations
 
 A lightweight entity graph without embeddings: directed edges between tracked
-entities, e.g. `Manni -arbeitet_bei-> arriva`, stored in `entity_relations`.
+entities, e.g. `Alex -arbeitet_bei-> acme`, stored in `entity_relations`.
 
 API:
 - `relate(from_name, predicate, to_name, ...)` — idempotent (same triple = one

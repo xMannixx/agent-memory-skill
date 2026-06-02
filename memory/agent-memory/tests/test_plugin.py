@@ -302,14 +302,14 @@ def test_memory_status_available_shape():
 
 
 def test_plugin_injects_related_entities_on_query(mem):
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company")
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni eigentlich?",
+        user_message="Wo arbeitet Alex eigentlich?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},
@@ -320,23 +320,23 @@ def test_plugin_injects_related_entities_on_query(mem):
 
     assert context is not None
     assert "## Related" in context
-    assert "Manni" in context
-    assert "Arriva" in context
+    assert "Alex" in context
+    assert "Acme" in context
     assert "arbeitet_bei" in context
 
 
 def test_plugin_related_entities_default_omits_neighbor_attributes(mem):
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company", {
-        "location": "Singen",
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company", {
+        "location": "Example City",
         "type": "logistics",
     })
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni?",
+        user_message="Wo arbeitet Alex?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},
@@ -347,24 +347,24 @@ def test_plugin_related_entities_default_omits_neighbor_attributes(mem):
 
     assert context is not None
     assert "## Related" in context
-    assert "- Manni --arbeitet_bei--> Arriva" in context
+    assert "- Alex --arbeitet_bei--> Acme" in context
     assert "[" not in context
 
 
 def test_plugin_related_entities_can_include_neighbor_attributes(mem, monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company", {
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company", {
         "type": "logistics",
-        "location": "Singen",
+        "location": "Example City",
         "zone": "south",
     })
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni?",
+        user_message="Wo arbeitet Alex?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},
@@ -375,8 +375,8 @@ def test_plugin_related_entities_can_include_neighbor_attributes(mem, monkeypatc
 
     assert context is not None
     assert (
-        "- Manni --arbeitet_bei--> Arriva "
-        "[location=Singen; type=logistics]"
+        "- Alex --arbeitet_bei--> Acme "
+        "[location=Example City; type=logistics]"
     ) in context
     assert "zone=south" not in context
 
@@ -386,17 +386,17 @@ def test_plugin_related_entity_attributes_respect_relations_budget(
     monkeypatch,
 ):
     monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company", {
-        "location": "Singen",
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company", {
+        "location": "Example City",
         "type": "logistics",
     })
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni?",
+        user_message="Wo arbeitet Alex?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},
@@ -411,14 +411,14 @@ def test_plugin_related_entity_attributes_respect_relations_budget(
 
 def test_plugin_related_entity_without_attributes_stays_plain(mem, monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_BUDGET_ENTITY_ATTRS", "2")
-    mem.track_entity("Manni", "person")
+    mem.track_entity("Alex", "person")
     mem.track_entity("X", "thing")
-    mem.relate("Manni", "kennt", "X", to_type="thing")
+    mem.relate("Alex", "kennt", "X", to_type="thing")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni?",
+        user_message="Wo arbeitet Alex?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},
@@ -428,14 +428,14 @@ def test_plugin_related_entity_without_attributes_stays_plain(mem, monkeypatch):
     )
 
     assert context is not None
-    assert "- Manni --kennt--> X" in context
+    assert "- Alex --kennt--> X" in context
     assert "[" not in context
 
 
 def test_plugin_no_relations_without_entity_match(mem):
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company")
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
@@ -454,14 +454,14 @@ def test_plugin_no_relations_without_entity_match(mem):
 
 def test_plugin_relations_opt_out_env(mem, monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_RELATIONS", "0")
-    mem.track_entity("Manni", "person")
-    mem.track_entity("Arriva", "company")
-    mem.relate("Manni", "arbeitet_bei", "Arriva")
+    mem.track_entity("Alex", "person")
+    mem.track_entity("Acme", "company")
+    mem.relate("Alex", "arbeitet_bei", "Acme")
 
     context = build_memory_context(
         mem,
         is_first_turn=False,
-        user_message="Wo arbeitet Manni?",
+        user_message="Wo arbeitet Alex?",
         budgets=minimal_budgets(
             identity={"limit": 0},
             evidence={"limit": 0},

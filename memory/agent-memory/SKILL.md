@@ -129,7 +129,7 @@ from memory import AgentMemory
 mem = AgentMemory()
 
 # Store a fact
-mem.remember("User's name is Manni", authority_class="identity",
+mem.remember("User's name is Alex", authority_class="identity",
              source="observation", confidence=1.0)
 
 # Store preference
@@ -148,11 +148,11 @@ mem.learn(action="Deployed without fallback",
           insight="Always configure a fallback provider")
 
 # Track an entity
-mem.track_entity("Manni", "person", {"username": "xPerryx", "language": "de"})
+mem.track_entity("Alex", "person", {"username": "alex_dev", "language": "de"})
 
 # Entity relations
-mem.relate("Manni", "arbeitet_bei", "arriva")
-mem.get_relations("Manni", direction="both")
+mem.relate("Alex", "arbeitet_bei", "acme")
+mem.get_relations("Alex", direction="both")
 
 # Conflicts (tag single-valued lane facts)
 mem.get_conflicts()
@@ -176,7 +176,7 @@ PYTHON=python3
 CLI=~/.hermes/agent-memory/cli/fact.py
 
 # Add fact
-$PYTHON $CLI add "User name is Manni" --authority identity --source observation --confidence 1.0
+$PYTHON $CLI add "User name is Alex" --authority identity --source observation --confidence 1.0
 
 # Search
 $PYTHON $CLI recall "name"
@@ -204,8 +204,8 @@ $PYTHON $CLI forget-stale
 $PYTHON $CLI learn "Action" "Context" positive "Insight"
 
 # Relations and conflicts
-$PYTHON $CLI relate Manni arbeitet_bei arriva
-$PYTHON $CLI relations Manni --direction out
+$PYTHON $CLI relate Alex arbeitet_bei acme
+$PYTHON $CLI relations Alex --direction out
 $PYTHON $CLI conflicts
 $PYTHON $CLI resolve-conflict <keep_id> <drop_id>
 ```

@@ -82,7 +82,7 @@ links the issues it closed.
   `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is set to N > 0 (default `0` =
   disabled), up to N stored `key=value` pairs per neighbor entity (sorted by
   key) are appended in brackets on each `## Related` line (e.g.
-  `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`).
+  `- Alex --arbeitet_bei--> Acme [location=Example City; type=logistics]`).
   Still edge-only; bounded by the existing `relations` section char budget.
 
 ### Fixed
@@ -101,7 +101,7 @@ links the issues it closed.
 - Relation-aware plugin recall: on query turns, bounded 1-hop expansion of
   entity relations when the user message mentions known entities (normalized
   term overlap with entity names). Injected under `## Related` (e.g.
-  `- Manni --arbeitet_bei--> Arriva`).
+  `- Alex --arbeitet_bei--> Acme`).
 - Dedicated `relations` injection budget (default: 6 lines, 1000 characters);
   expands from at most 3 matched entities per turn.
 - Opt-out via `AGENT_MEMORY_RELATIONS` (`0` / `false` / `no` / `off` to

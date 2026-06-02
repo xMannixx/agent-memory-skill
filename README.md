@@ -171,7 +171,7 @@ from memory import AgentMemory
 mem = AgentMemory()
 
 # Store identity fact (permanent, never expires)
-mem.remember("User's name is Manni", authority_class="identity",
+mem.remember("User's name is Alex", authority_class="identity",
              source="observation", confidence=1.0)
 
 # Store preference (expires after 14d without access)
@@ -197,12 +197,12 @@ mem.learn(
 )
 
 # Track an entity
-mem.track_entity("Manni", "person", {"username": "xMannixx", "language": "de"})
+mem.track_entity("Alex", "person", {"username": "alex_dev", "language": "de"})
 
 # Entity relations (lightweight graph)
-mem.relate("Manni", "arbeitet_bei", "arriva", from_type="person", to_type="org")
-mem.get_relations("Manni", direction="out")
-neighbors = mem.related_entities("Manni", predicate="arbeitet_bei")
+mem.relate("Alex", "arbeitet_bei", "acme", from_type="person", to_type="org")
+mem.get_relations("Alex", direction="out")
+neighbors = mem.related_entities("Alex", predicate="arbeitet_bei")
 
 # Conflict detection (single-valued lanes; tag the subject)
 mem.remember("User role is admin", authority_class="identity",
@@ -248,8 +248,8 @@ python3 $CLI snippet add "Discussed local-first retrieval design" --session demo
 python3 $CLI snippet search retrieval --session demo
 
 # Entity relations
-python3 $CLI relate Manni arbeitet_bei arriva --from-type person --to-type org
-python3 $CLI relations Manni --direction out --predicate arbeitet_bei
+python3 $CLI relate Alex arbeitet_bei acme --from-type person --to-type org
+python3 $CLI relations Alex --direction out --predicate arbeitet_bei
 
 # Conflicts (single-valued lanes)
 python3 $CLI conflicts
@@ -261,7 +261,7 @@ python3 $CLI propose-rule --domain response_style \
   --trigger '{"scope":"always"}' --effect '{"length":"short"}' \
   --behavior "Keep responses concise."
 python3 $CLI pending-rules
-python3 $CLI approve-rule <rule_id> --by manni        # add --ack-interactions to override soft blocks
+python3 $CLI approve-rule <rule_id> --by alex        # add --ack-interactions to override soft blocks
 python3 $CLI active-rules
 python3 $CLI rule-conflicts
 python3 $CLI reject-rule <rule_id> "too broad"

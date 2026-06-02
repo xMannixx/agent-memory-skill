@@ -112,7 +112,7 @@ Two focused improvements shipped without changing the dependency profile:
    `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` is set to N > 0 (default `0` =
    disabled), up to N stored `key=value` attributes per neighbor entity (sorted
    by key) are appended to each injected relation line in `## Related`, e.g.
-   `- Manni --arbeitet_bei--> Arriva [location=Singen; type=logistics]`.
+   `- Alex --arbeitet_bei--> Acme [location=Example City; type=logistics]`.
    Still edge-only (no facts); output remains bounded by the `relations`
    section budget.
 2. **Conflict reconciliation** — Open `fact_conflicts` rows are automatically

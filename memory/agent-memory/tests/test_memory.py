@@ -2139,7 +2139,7 @@ def test_remember_rejects_procedural_authority_class(mem):
 
 def test_approve_rule_activates(mem):
     rule_id = _propose(mem)
-    result = mem.approve_rule(rule_id, approved_by="manni")
+    result = mem.approve_rule(rule_id, approved_by="alex")
     assert result["approved"] is True
     active = mem.get_active_rules()
     assert [r.id for r in active] == [rule_id]
