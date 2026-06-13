@@ -9,6 +9,7 @@ metadata:
   hermes:
     tags: [memory, sqlite, persistence, facts, snippets, lessons, entities, authority-lanes, plugin, retrieval]
     category: memory
+metadata.hermes.tags: []
 ---
 
 # AgentMemory Skill
