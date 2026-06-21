@@ -254,6 +254,9 @@ def main():
             print(f"[{f.id}] ({f.authority_class}) {f.content[:70]} {tags}")
 
     elif args.command == "supersede":
+        if not mem.get_fact(args.fact_id):
+            print(f"ERROR — fact_id '{args.fact_id}' not found; nothing superseded.", file=sys.stderr)
+            sys.exit(1)
         new_id = mem.supersede(args.fact_id, args.new_content,
                                authority_class=args.authority)
         if new_id:

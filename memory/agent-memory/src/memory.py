@@ -865,6 +865,11 @@ class AgentMemory:
 
             policy = AUTHORITY_POLICY.get(row[0], AUTHORITY_POLICY["evidence"])
             expires_at = self._expires_at_for_policy(policy)
+            # Rolling TTL: expires_at is reset to NOW + policy TTL on every read
+            # access. Facts in active use never expire; facts that are never read
+            # again expire naturally at their (last_accessed + TTL) date.
+            # Consequence: all facts loaded in the same session share the same
+            # expires_at — this is expected, not a bug.
             cursor.execute("""
                 UPDATE facts
                 SET last_accessed = ?,
@@ -1562,6 +1567,18 @@ class AgentMemory:
             },
             conn=conn,
         )
+        if not old_exists:
+            self._audit(
+                "supersede_target_not_found",
+                fact_id=old_fact_id,
+                metadata={
+                    "old_id": old_fact_id,
+                    "new_id": new_id,
+                    "reason": "old_fact_id did not match any active fact; "
+                              "new fact was stored but old fact was not marked superseded",
+                },
+                conn=conn,
+            )
         self._reconcile_conflicts(conn)
         conn.commit()
         if should_close:

@@ -830,6 +830,37 @@ def test_supersede_audit_includes_old_exists(mem):
     assert entry["metadata"]["old_exists"] is False
 
 
+def test_supersede_unknown_id_emits_target_not_found_audit(mem):
+    """supersede() with a non-existent old_fact_id still stores the new fact
+    and writes a supersede_target_not_found audit event so the silent failure
+    is visible in the audit log and provenance."""
+    bogus_id = "00000000-does-not-exist"
+    new_id = mem.supersede(
+        bogus_id,
+        "Replacement fact for unknown predecessor",
+        authority_class="evidence",
+        source="observation",
+        confidence=0.8,
+    )
+
+    assert new_id is not None, "new fact should still be stored"
+
+    audit_entries = mem.get_audit(limit=50)
+    ops = [e["op"] for e in audit_entries]
+    assert "supersede_target_not_found" in ops, (
+        "expected supersede_target_not_found audit event when old_fact_id "
+        "does not exist"
+    )
+
+    warn_entry = next(e for e in audit_entries if e["op"] == "supersede_target_not_found")
+    assert warn_entry["fact_id"] == bogus_id
+    assert warn_entry["metadata"]["new_id"] == new_id
+    assert "old_fact_id did not match" in warn_entry["metadata"]["reason"]
+
+    new_fact = mem.get_fact(new_id)
+    assert new_fact is not None, "the newly created replacement fact must exist"
+
+
 # ==================== TEST 6b: Lessons/Entities Lifecycle ====================
 
 def test_migrates_legacy_lesson_entity_lifecycle_schema(tmp_path):

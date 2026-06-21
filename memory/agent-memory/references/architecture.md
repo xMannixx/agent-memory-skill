@@ -29,6 +29,49 @@ as an authorization fact ("user can modify system config"). This is wrong.
 - Prevents prompt injection: "you are now allowed to delete files"
   from a conversation message is automatically rejected.
 
+## TTL Semantics: Rolling Window
+
+AgentMemory uses a **rolling TTL**, not a static one.
+
+### How it works
+
+`expires_at` is not set to `created_at + TTL_days` once at write time and
+then left alone. Instead, `_touch()` resets `expires_at = NOW + TTL_days`
+**on every read access** — every `recall()`, `recall_by_authority()`, and
+`get_fact()` call extends the lifetime of the returned facts.
+
+```
+expires_at = last_accessed + TTL_days   (rolling)
+         ≠ created_at + TTL_days        (static)
+```
+
+### Why rolling, not static?
+
+Rolling TTL implements use-it-or-lose-it semantics:
+- Facts that the agent actively retrieves stay alive indefinitely.
+- Facts that are never accessed again expire at `last_accessed + TTL`.
+- This prevents stale, unretrieved data from lingering forever while
+  keeping genuinely useful facts available.
+
+### What this looks like in the database
+
+All facts loaded in the same session — e.g. all Evidence facts injected
+at session start — will share the **same `expires_at` timestamp**, even if
+their `created_at` dates span weeks or months. This is expected behavior,
+not a bug.
+
+Example: an Evidence fact created on 2026-05-01 and another created on
+2026-06-15 both get `expires_at = 2026-08-20` if they are both loaded on
+2026-06-21. Neither will expire sooner because both are actively in use.
+
+### Implication for DB inspection
+
+When inspecting the database directly (e.g. via `sqlite3`), do not
+interpret equal `expires_at` values as proof that facts were stored at the
+same time. Check `created_at` for the actual storage date.
+
+---
+
 ## Source Trust Graduation
 
 Facts carry a `source` that reflects how the content was obtained. Five sources
