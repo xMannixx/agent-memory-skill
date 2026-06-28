@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: "Persistent SQLite memory for Hermes: Facts, snippets, lessons, entities, relations, provenance (read-only audit-chain reconstruction), finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, a procedural lane for self-written behavioral rules (observation-only, human review-gate, rule-conflict detection), Rebound-Protection, and budgeted German-aware query retrieval."
+description: "Persistent SQLite memory for Hermes and OpenClaw: Facts, snippets, lessons, entities, relations, provenance (read-only audit-chain reconstruction), finer source trust (tool/external quarantined to evidence), relation-aware plugin recall with opt-in neighbor attributes, conflict detection, Authority Lanes, a procedural lane for self-written behavioral rules (observation-only, human review-gate, rule-conflict detection), Rebound-Protection, and budgeted German-aware query retrieval."
 version: 3.6.0
 author: xPerryx + Lena OpenClaw (agent-memory-1-0-0 base)
 license: MIT
@@ -13,7 +13,7 @@ metadata:
 
 # AgentMemory Skill
 
-Persistent memory system for Hermes Agent with structured Authority Lanes, raw recall snippets, Rebound-Protection, and budgeted plugin retrieval.
+Persistent memory system for Hermes and OpenClaw with structured Authority Lanes, raw recall snippets, Rebound-Protection, and budgeted plugin retrieval.
 
 Inspired by Lena OpenClaw's agent-memory-1-0-0, extended with:
 - Authority Lanes (identity / preference / evidence / authorization / procedural)

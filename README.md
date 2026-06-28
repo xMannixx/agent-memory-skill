@@ -4,7 +4,7 @@
 
 <h1 align="center">agent-memory</h1>
 
-<p align="center"><strong>Persistent SQLite memory for Hermes Agent</strong><br>structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.</p>
+<p align="center"><strong>Persistent SQLite memory for Hermes and OpenClaw agents</strong><br>structured Authority Lanes, recall snippets, Rebound-Protection, and budgeted memory injection.</p>
 
 <p align="center">
   <a href="https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml"><img src="https://github.com/xMannixx/agent-memory-skill/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -20,12 +20,12 @@ Architecture patterns from Moltbook #memory thread (signalfoundry, deicticprism)
 
 ## The Problem
 
-Hermes has built-in memory — but it's a flat list. Everything lands in one pot.
+Hermes and OpenClaw have built-in memory — but it's a flat list. Everything lands in one pot.
 A preference fact ("user likes short answers") has the same weight as a technical fact ("this server runs Ubuntu 24.04"). There's no separation of trust, no expiry logic per type, and no protection against memory flooding after long offline phases.
 
 ## The Solution
 
-This skill adds a structured memory layer on top of Hermes with:
+This skill adds a structured memory layer on top of Hermes and OpenClaw with:
 
 - **Authority Lanes** — 5 classes with separate TTL, confidence thresholds, and source policies
 - **Recall snippets** — raw conversation recall stored separately from distilled semantic facts
