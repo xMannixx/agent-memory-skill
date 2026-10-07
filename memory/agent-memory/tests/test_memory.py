@@ -1841,6 +1841,46 @@ def test_consolidate_merges_duplicate_lane_tag_group(mem):
     assert active[0].content == "SQLite ist Memory Backend"
 
 
+def test_consolidate_leaves_untagged_facts_alone(mem):
+    contents = [
+        "Router IP is 192.168.1.1",
+        "Editor is Neovim",
+        "Project uses Python 3.12",
+    ]
+    for content in contents:
+        mem.remember(content, authority_class="evidence",
+                     source="observation", confidence=1.0)
+
+    report = mem.consolidate()
+    active = mem.list_facts(authority_class="evidence")
+
+    assert report["groups_examined"] == 0
+    assert report["facts_superseded"] == 0
+    assert sorted(f.content for f in active) == sorted(contents)
+
+
+def test_consolidate_merges_tagged_group_but_keeps_untagged(mem):
+    mem.remember("Projekt nutzt SQLite", tags=["db"],
+                 authority_class="evidence", source="conversation", confidence=0.7)
+    mem.remember("SQLite ist Memory Backend", tags=["db"],
+                 authority_class="evidence", source="conversation", confidence=0.8)
+    mem.remember("Router IP is 192.168.1.1", authority_class="evidence",
+                 source="observation", confidence=1.0)
+    mem.remember("Editor is Neovim", authority_class="evidence",
+                 source="observation", confidence=1.0)
+
+    report = mem.consolidate()
+    active = {f.content for f in mem.list_facts(authority_class="evidence")}
+
+    assert report["groups_examined"] == 1
+    assert report["facts_superseded"] == 1
+    assert active == {
+        "SQLite ist Memory Backend",
+        "Router IP is 192.168.1.1",
+        "Editor is Neovim",
+    }
+
+
 def test_consolidate_preserves_superseded_for_inspection(mem):
     first = mem.remember(
         "Fact A",
