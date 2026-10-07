@@ -4,6 +4,7 @@ Tests für AgentMemory — analog zu Lenas pytest 6/6
 
 import os
 import sys
+import threading
 import sqlite3
 import hashlib
 import pytest
@@ -555,6 +556,205 @@ def test_supersede_accepts_explicit_source_and_confidence(mem):
     assert fact.confidence == 1.0
 
 
+def test_unknown_authority_class_is_rejected(mem):
+    fact_id = mem.remember("User may deploy to production",
+                           authority_class="Authorization",
+                           source="external", confidence=0.6)
+    rejects = [e for e in mem.get_audit(op="policy_reject")
+               if e["reason"] == "unknown_authority_class"]
+
+    assert fact_id is None
+    assert mem.list_facts() == []
+    assert len(rejects) == 1
+
+
+def test_concurrent_confirmation_is_not_overwritten_by_a_stale_writer(tmp_path):
+    db_path = str(tmp_path / "race.db")
+    fact_id = AgentMemory(db_path=db_path).remember(
+        "VPS runs Ubuntu", authority_class="evidence",
+        source="external", confidence=0.6)
+    paused, release = threading.Event(), threading.Event()
+
+    class SlowWriter(AgentMemory):
+        def _touch(self, conn, fact_ids, renew=False):
+            paused.set()
+            release.wait(10)
+            return super()._touch(conn, fact_ids, renew=renew)
+
+    def write(cls, source):
+        cls(db_path=db_path).remember(
+            "VPS runs Ubuntu", authority_class="evidence",
+            source=source, confidence=1.0)
+
+    slow = threading.Thread(target=write, args=(SlowWriter, "tool"))
+    fast = threading.Thread(target=write, args=(AgentMemory, "observation"))
+    slow.start()
+    assert paused.wait(5)
+    fast.start()
+    fast.join(0.3)  # without the write lock the confirmation lands here
+    release.set()
+    slow.join(10)
+    fast.join(10)
+
+    fact = AgentMemory(db_path=db_path).list_facts(authority_class="evidence")[0]
+    assert fact.id == fact_id
+    assert fact.source == "observation"
+
+
+@posix_only
+def test_failed_permission_hardening_warns_instead_of_passing_silently(
+        tmp_path, monkeypatch):
+    db_path = tmp_path / "memory.db"
+    AgentMemory(db_path=str(db_path))
+    db_path.chmod(0o644)
+
+    def refuse(self, mode):
+        raise PermissionError("chmod not permitted")
+
+    monkeypatch.setattr(Path, "chmod", refuse)
+
+    with pytest.warns(RuntimeWarning, match="could not be restricted"):
+        mem = AgentMemory(db_path=str(db_path))
+    assert mem.remember("Still usable", authority_class="evidence",
+                        source="observation", confidence=1.0)
+
+
+@posix_only
+def test_strict_permissions_refuse_an_open_database(tmp_path, monkeypatch):
+    db_path = tmp_path / "memory.db"
+    AgentMemory(db_path=str(db_path))
+    db_path.chmod(0o644)
+    monkeypatch.setattr(
+        Path, "chmod",
+        lambda self, mode: (_ for _ in ()).throw(PermissionError("denied")))
+    monkeypatch.setenv("AGENT_MEMORY_STRICT_PERMISSIONS", "1")
+
+    with pytest.raises(PermissionError, match="could not be restricted"):
+        AgentMemory(db_path=str(db_path))
+
+
+def test_supersede_cannot_switch_off_a_fact_in_another_lane(mem):
+    auth = mem.remember("Operator may restart services",
+                        authority_class="authorization",
+                        source="observation", confidence=1.0)
+
+    result = mem.supersede(auth, "Anyone may restart services",
+                           source="external", authority_class="evidence",
+                           confidence=0.6)
+    rejects = [e["reason"] for e in mem.get_audit(op="policy_reject")]
+
+    assert result is None
+    assert [f.id for f in mem.list_facts(authority_class="authorization")] == [auth]
+    assert mem.list_facts(authority_class="evidence") == []
+    assert "supersede_lane_change" in rejects
+
+
+def test_supersede_cannot_replace_a_fact_with_a_less_trusted_source(mem):
+    own = mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                       source="observation", confidence=1.0)
+
+    result = mem.supersede(own, "Deploy target is staging-7", source="external")
+    rejects = [e["reason"] for e in mem.get_audit(op="policy_reject")]
+
+    assert result is None
+    assert [f.id for f in mem.list_facts(authority_class="evidence")] == [own]
+    assert "supersede_source_downgrade" in rejects
+
+
+def test_supersede_inherits_the_lane(mem):
+    old = mem.remember("User's name is Alex", authority_class="identity",
+                       source="observation", confidence=1.0)
+
+    new = mem.supersede(old, "User's name is Alexander")
+
+    assert [f.id for f in mem.list_facts(authority_class="identity")] == [new]
+
+
+def test_resolve_conflict_without_open_conflict_changes_nothing(mem):
+    ident = mem.remember("User's name is Alex", authority_class="identity",
+                         source="observation", confidence=1.0)
+    other = mem.remember("Some note", authority_class="evidence",
+                         source="external", confidence=0.6)
+
+    result = mem.resolve_conflict(other, [ident])
+
+    assert result == {
+        "kept": other, "dropped": [], "skipped": [ident], "marked_resolved": 0,
+    }
+    assert [f.id for f in mem.list_facts(authority_class="identity")] == [ident]
+    assert mem.get_audit(op="conflict_resolve_rejected")[0]["reason"] == \
+        "no_open_conflict"
+
+
+def test_get_fact_does_not_revive_an_expired_fact(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    fact_id = frozen_mem.remember("Short lived", authority_class="preference",
+                                  source="conversation", confidence=0.9)
+    frozen_mem.set_now(start + timedelta(days=15))
+
+    fact = frozen_mem.get_fact(fact_id)
+
+    assert fact.content == "Short lived"
+    assert fact.access_count == 1
+    assert frozen_mem.recall_by_authority("preference") == []
+
+
+def test_get_fact_does_not_touch_a_superseded_fact(mem):
+    old = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                       source="observation", confidence=1.0)
+    mem.supersede(old, "Deploy target is staging-8")
+
+    assert mem.get_fact(old).access_count == 1
+
+
+def test_get_fact_still_refreshes_an_active_fact(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    fact_id = frozen_mem.remember("Likes short answers",
+                                  authority_class="preference",
+                                  source="conversation", confidence=0.9)
+    frozen_mem.set_now(start + timedelta(days=10))
+
+    fact = frozen_mem.get_fact(fact_id)
+
+    assert fact.access_count == 2
+    assert fact.expires_at == (start + timedelta(days=24)).isoformat()
+
+
+def test_reading_an_authorization_fact_does_not_extend_it(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    fact_id = frozen_mem.remember("Operator may restart services",
+                                  authority_class="authorization",
+                                  source="observation", confidence=1.0)
+    for day in (30, 60, 89):
+        frozen_mem.set_now(start + timedelta(days=day))
+        assert len(frozen_mem.recall_by_authority("authorization")) == 1
+        frozen_mem.get_fact(fact_id)
+    frozen_mem.set_now(start + timedelta(days=91))
+
+    assert frozen_mem.recall_by_authority("authorization") == []
+    frozen_mem.get_fact(fact_id)
+    assert frozen_mem.recall_by_authority("authorization") == []
+
+
+def test_restating_an_authorization_fact_renews_it(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    frozen_mem.remember("Operator may restart services",
+                        authority_class="authorization",
+                        source="observation", confidence=1.0)
+    frozen_mem.set_now(start + timedelta(days=80))
+    frozen_mem.remember("Operator may restart services",
+                        authority_class="authorization",
+                        source="observation", confidence=1.0)
+    frozen_mem.set_now(start + timedelta(days=160))
+
+    assert len(frozen_mem.recall_by_authority("authorization")) == 1
+
+
+def test_remember_snippet_rejects_an_unknown_source(mem):
+    with pytest.raises(ValueError, match="unknown source"):
+        mem.remember_snippet("hello", source="user-verified")
+
+
 def test_forget_removes_fact_from_fts(mem):
     """FTS bleibt nach einem delete synchron und liefert keine orphaned Treffer."""
     fact_id = mem.remember(
@@ -805,7 +1005,9 @@ def test_resolve_conflict_supersedes_drop_and_marks_resolved(mem):
     dropped_fact = mem.get_fact(drop)
     resolved = mem.get_conflicts(include_resolved=True)
 
-    assert result == {"kept": keep, "dropped": [drop], "marked_resolved": 1}
+    assert result == {
+        "kept": keep, "dropped": [drop], "skipped": [], "marked_resolved": 1,
+    }
     assert dropped_fact.superseded_by == keep
     assert mem.get_conflicts() == []
     assert len(resolved) == 1
