@@ -17,6 +17,7 @@ via pre_llm_call hook — no manual loading needed.
 
 from __future__ import annotations
 import hashlib
+import inspect
 import logging
 import os
 import re
@@ -66,6 +67,11 @@ RELATIONS_MAX_ENTITIES = 3
 # Sources that never speak for the user. Evidence from these is labeled in the
 # prompt so the model can tell unconfirmed context from user-stated facts.
 LOW_TRUST_SOURCES = ("inference", "tool", "external")
+
+# Sources that speak for the user. Automatic injection refreshes the rolling
+# TTL only for these: showing a fact to the model does not confirm it, so
+# low-trust evidence must be re-observed or recalled explicitly to stay alive.
+TRUSTED_SOURCES = ("observation", "conversation")
 
 _CONTEXT_SOURCE_NOTE = (
     "Entries marked [inference], [tool] or [external] did not come from the "
@@ -194,6 +200,20 @@ def _context_section(facts: List[Any], max_chars: int) -> Optional[str]:
     if len(clipped) <= 1:
         return None
     return "## Context\n" + "\n".join(clipped)
+
+
+def _injection_recall_kwargs(method: Any) -> Dict[str, Any]:
+    """Keyword arguments for recall calls made by automatic injection.
+
+    Older memory modules do not know `touch_sources`; they keep their
+    refresh-everything behavior instead of failing.
+    """
+    try:
+        if "touch_sources" in inspect.signature(method).parameters:
+            return {"touch_sources": TRUSTED_SOURCES}
+    except (TypeError, ValueError):
+        pass
+    return {}
 
 
 def _first_text_value(values: Iterable[Any]) -> Optional[str]:
@@ -509,6 +529,7 @@ def build_memory_context(
         evidence_facts = mem.recall_by_authority(
             "evidence",
             limit=evidence_budget["limit"],
+            **_injection_recall_kwargs(mem.recall_by_authority),
         )
     else:
         candidate_limit = max(evidence_budget["limit"] * 3, evidence_budget["limit"])
@@ -516,6 +537,7 @@ def build_memory_context(
             user_message,
             limit=candidate_limit,
             authority_class="evidence",
+            **_injection_recall_kwargs(mem.recall),
         )
         evidence_facts = _rank_relevant_facts(
             evidence_facts,

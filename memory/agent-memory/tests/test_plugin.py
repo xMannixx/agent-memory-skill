@@ -180,6 +180,59 @@ def test_plugin_source_note_never_injected_without_a_fact(mem):
     assert context is None or "## Context" not in context
 
 
+def test_plugin_injection_does_not_refresh_low_trust_evidence(mem):
+    trusted = mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                           source="observation", confidence=1.0)
+    foreign = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                           source="external", confidence=1.0)
+
+    first = build_memory_context(mem, is_first_turn=True)
+    later = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="What is the deploy target?",
+    )
+    counts = {f.id: f.access_count
+              for f in mem.list_facts(authority_class="evidence")}
+
+    assert "staging-7" in first and "staging-7" in later
+    assert counts[trusted] == 3
+    assert counts[foreign] == 1
+
+
+def test_plugin_works_with_memory_module_without_touch_sources(mem):
+    class LegacyMemory:
+        """Stands in for a memory module from before `touch_sources`."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def recall_by_authority(self, authority_class, limit=50):
+            return self._inner.recall_by_authority(authority_class, limit=limit)
+
+        def recall(self, query, limit=10, authority_class=None):
+            return self._inner.recall(
+                query, limit=limit, authority_class=authority_class
+            )
+
+        def get_lessons(self, **kwargs):
+            return self._inner.get_lessons(**kwargs)
+
+    mem.remember("Deploy target is staging-7", authority_class="evidence",
+                 source="external", confidence=1.0)
+    legacy = LegacyMemory(mem)
+
+    first = build_memory_context(legacy, is_first_turn=True)
+    later = build_memory_context(
+        legacy,
+        is_first_turn=False,
+        user_message="What is the deploy target?",
+    )
+
+    assert "- [external] Deploy target is staging-7" in first
+    assert "- [external] Deploy target is staging-7" in later
+
+
 def test_plugin_returns_none_after_first_turn_without_query(mem):
     mem.remember(
         "Perry is the operator",
