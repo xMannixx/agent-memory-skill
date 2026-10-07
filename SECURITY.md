@@ -49,8 +49,13 @@ prompt injection. The project includes deliberate defenses:
 - **Sources do not change by accident.** `supersede` inherits lane, source and
   confidence, and rejects a lane change or a less trusted source;
   `resolve_conflict` needs an open conflict between the two facts;
-  `consolidate()` prefers the more trusted source; a repeat from a more trusted
-  source upgrades, never the reverse, also under concurrent writers.
+  `consolidate()` prefers the more trusted source and adds no confidence for
+  group size; a repeat from a more trusted source upgrades, a less trusted one
+  changes nothing. These decisions and the writes that follow share one write
+  lock, so they hold under concurrent writers.
+- **A retired fact does not come back with its old label.** A fact that
+  expired or was superseded and is stated again takes the source and
+  confidence of the new statement. An expired fact cannot win a conflict.
 - **Unknown lanes are rejected.** A look-alike authority class such as
   `Authorization` is not stored under the evidence policy.
 - **Permissions end unless restated.** `authorization` facts are not extended

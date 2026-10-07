@@ -10,6 +10,19 @@ links the issues it closed.
 ## [Unreleased]
 
 ### Security
+- `supersede()`, `consolidate()` and `resolve_conflict()` run their read, check
+  and write in one write transaction that inner calls join. Each decided on a
+  read taken before the lock: a fact confirmed as `observation` in between was
+  still retired in favor of an `external` one.
+- A fact that expired and is stated again takes the source and confidence of
+  the new statement (audited `revived`, `was_expired`). It kept its old source,
+  so third-party text repeating an expired user statement brought it back
+  unlabeled. A less trusted repeat of a still-active fact no longer extends its
+  expiry.
+- `resolve_conflict()` refuses a kept fact that is expired or superseded
+  (`keep_not_active`); open conflicts are those whose two facts are both
+  active, in `get_conflicts()`, `stats()` and the automatic cleanup. An expired
+  authorization fact could win a conflict and retire the live one.
 - CLI: every printed line goes through one `emit()` that strips line breaks and
   control characters. The earlier fix covered fact content only; a line break in
   a tag, snippet session or source, relation name, or rule text still produced
@@ -62,6 +75,9 @@ links the issues it closed.
   an older memory module.
 
 ### Changed
+- `consolidate()` no longer raises confidence. The representative keeps its
+  own value. The 0.05 bonus per group member counted contradictions as support
+  and, with restating, could be replayed until confidence reached 1.0.
 - `remember()` with identical content from a more trusted source now upgrades
   the stored source and raises confidence to the higher value (audited with
   `source_upgraded_from`). Previously the first source stuck, so a fact the user
@@ -86,15 +102,15 @@ links the issues it closed.
   as before.
 
 ### Fixed
+- `supersede()` with the same text as the fact it replaces no longer marks the
+  fact as superseded by itself.
+- `supersede()` is all-or-nothing: a failure after the new fact was stored used
+  to leave both facts active.
 - `consolidate()` only looks at active facts. `list_facts()` returned expired
   facts, so an expired fact with higher confidence could become the
   representative and supersede the live one, leaving nothing active.
   `list_facts()` now leaves out expired facts unless `include_expired=True`;
   CLI `list` gains `--include-expired` and marks such rows `[expired]`.
-- `consolidate()` raises confidence only for group members from an equally or
-  more trusted source. Same tags mean same subject, not agreement: four
-  contradicting `external` facts used to lift a user-sourced fact from 0.7 to
-  0.9.
 - Stating a superseded fact again makes it active again, with the source and
   confidence of the new statement (audited as `revived`). It used to stay
   hidden while `remember()` returned its id. A resolved conflict between two
