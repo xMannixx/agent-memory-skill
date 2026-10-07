@@ -1457,7 +1457,11 @@ class AgentMemory:
         return facts
 
     def consolidate(self, dry_run: bool = False) -> Dict[str, Any]:
-        """Deterministic consolidation of active facts by lane+tag set."""
+        """Deterministic consolidation of active facts by lane+tag set.
+
+        Untagged facts are never grouped: without tags there is no shared
+        subject, and identical content already dedupes via content-hash IDs.
+        """
         facts = self.list_facts(limit=100000)
         groups: Dict[tuple, List[Fact]] = {}
         for fact in facts:
@@ -1466,7 +1470,7 @@ class AgentMemory:
 
         candidate_groups = [
             (key, group) for key, group in sorted(groups.items())
-            if len(group) >= 2
+            if len(group) >= 2 and key[1]
         ]
         report = {
             "dry_run": dry_run,
