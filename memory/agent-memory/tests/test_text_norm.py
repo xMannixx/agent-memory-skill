@@ -5,7 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from text_norm import expand, fold, one_line, query_terms, stem_de
+from text_norm import (
+    expand, fold, one_line, query_terms, stem_de, strip_control,
+)
 
 
 SEED_SYNONYMS = {
@@ -52,3 +54,8 @@ def test_one_line_collapses_every_kind_of_line_break(separator):
 
 def test_one_line_strips_control_characters_and_outer_whitespace():
     assert one_line("  a\x00b\x1b[0m\t c \n") == "a b [0m c"
+
+
+def test_strip_control_removes_line_breaks_but_keeps_alignment():
+    assert strip_control("Active facts:     12\nforged") == "Active facts:     12 forged"
+
