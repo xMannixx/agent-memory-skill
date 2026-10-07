@@ -82,7 +82,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 177 passed
+# Expected: 187 passed
 ```
 
 ## Authority Lanes
@@ -118,6 +118,12 @@ Non-identity facts expire by last access, not only by creation time. `recall()`,
 `recall_by_authority()`, and `get_fact()` all refresh `last_accessed` and extend
 `expires_at` according to the fact's authority lane. This keeps facts alive when
 the auto-injection plugin actively uses them.
+
+Exception: automatic injection does not refresh evidence stored from `inference`,
+`tool`, or `external`. Showing a fact to the model does not confirm it, so such
+facts expire on their lane TTL unless they are re-observed (`remember()` again)
+or recalled explicitly. Both recall methods take `touch_sources=(...)` to limit
+the refresh to given sources; the default refreshes every returned fact.
 
 ## Python Usage
 
@@ -250,7 +256,7 @@ No manual loading required.
 
 - **Floor (identity)** never decays — idle periods must not lower the entry threshold.
 - **Rebound-Cap**: After >6h idle, max 3 new facts — prevents memory flooding. Identity is exempt.
-- **Sliding TTL**: Read access refreshes non-identity expiry, so active facts survive cleanup.
+- **Sliding TTL**: Read access refreshes non-identity expiry, so active facts survive cleanup. Automatic injection refreshes only user-sourced facts (`observation`, `conversation`).
 - **Recall snippets are separate**: raw conversation memory does not pollute semantic facts and is not auto-injected.
 - **Prompt budgets**: plugin context is clipped per lane to keep first-turn and later-turn prompts bounded.
 - **Timer as compactor only** — writing is event-driven (on `remember()`), not time-based.

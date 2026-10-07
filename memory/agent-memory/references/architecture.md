@@ -64,6 +64,21 @@ Example: an Evidence fact created on 2026-05-01 and another created on
 2026-06-15 both get `expires_at = 2026-08-20` if they are both loaded on
 2026-06-21. Neither will expire sooner because both are actively in use.
 
+### Automatic injection and low-trust facts
+
+The plugin's first-turn baseline selects the most recently accessed evidence
+facts, and reading them counts as access. Left alone, that is a loop: whatever
+is in the baseline stays in the baseline and never expires, whether or not
+anyone ever confirmed it.
+
+Automatic injection therefore refreshes the rolling TTL only for facts from
+`observation` and `conversation`. Evidence from `inference`, `tool`, or
+`external` is still injected (and labeled), but being shown does not extend its
+life: it expires on the lane TTL unless it is re-observed via `remember()` or
+recalled explicitly. `recall()` and `recall_by_authority()` expose this as
+`touch_sources`; the default (`None`) keeps the refresh-everything behavior for
+explicit callers.
+
 ### Implication for DB inspection
 
 When inspecting the database directly (e.g. via `sqlite3`), do not
