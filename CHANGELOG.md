@@ -10,6 +10,30 @@ links the issues it closed.
 ## [Unreleased]
 
 ### Security
+- CLI: every printed line goes through one `emit()` that strips line breaks and
+  control characters. The earlier fix covered fact content only; a line break in
+  a tag, snippet session or source, relation name, or rule text still produced
+  an extra line that looked like another record or a status message.
+- `remember()` rejects an unknown authority class (`unknown_authority_class`).
+  It used to store it under the evidence policy, so a look-alike lane such as
+  `Authorization` was accepted from any source.
+- `remember()` takes the write lock (`BEGIN IMMEDIATE`) before reading. A
+  concurrent writer with a stale read could overwrite a confirmed `observation`
+  source with a less trusted one.
+- `supersede()` inherits the lane and rejects a lane change or a less trusted
+  source; `resolve_conflict()` only acts on an open conflict between the two
+  facts and reports the rest as `skipped`. Either could deactivate an
+  `authorization` or `identity` fact from an unrelated low-trust write. CLI
+  `supersede --authority` now defaults to the replaced fact's lane.
+- `get_fact()` no longer refreshes expired or superseded facts; an expired
+  fact was reactivated just by being looked up.
+- `authorization` facts are not extended by reads (`rolling_ttl: False`). They
+  expire 90 days after they were last stated with `remember()`.
+- File-permission hardening no longer fails silently: if a memory file stays
+  accessible to group/others a `RuntimeWarning` names it, and
+  `AGENT_MEMORY_STRICT_PERMISSIONS=1` turns that into an error.
+- `remember_snippet()` and CLI `snippet add --source` accept only the five
+  known sources.
 - Injected entries and CLI output are rendered on exactly one line. Stored
   content containing line breaks could continue past its own list item and
   imitate another entry or a whole section — for example a fake
@@ -43,6 +67,10 @@ links the issues it closed.
   `source_upgraded_from`). Previously the first source stuck, so a fact the user
   later confirmed stayed marked as low-trust. A less trusted repeat still
   changes nothing.
+- `resolve_conflict()` returns an additional `skipped` list.
+- Docs: the human review-gate is described as a status change that the host
+  must protect, and Rebound-Protection as a per-process counter that does not
+  cap repeated CLI calls.
 - Docs: security claims reworded to say that sources are declared by the
   writer, the audit log is append-only by convention, and rule-text
   sanitization is a blocklist behind the human review-gate.

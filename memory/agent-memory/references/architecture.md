@@ -134,16 +134,35 @@ Two rules keep a source from changing by accident:
   trusted source, the stored source is replaced and confidence is raised to the
   higher value; the audit entry records `source_upgraded_from`. A less trusted
   repeat changes nothing.
-- **Rewording does not upgrade.** `supersede()` inherits the old fact's source
-  and confidence unless the caller passes new ones, so replacing the text of a
-  `tool` fact cannot turn it into a `conversation` fact by default.
+- **Rewording does not upgrade.** `supersede()` inherits the old fact's lane,
+  source and confidence unless the caller passes new ones, so replacing the
+  text of a `tool` fact cannot turn it into a `conversation` fact by default.
+- **A replacement cannot switch off something more trusted.** `supersede()`
+  rejects a lane change and a source below the old fact's source
+  (`supersede_lane_change`, `supersede_source_downgrade`), and
+  `resolve_conflict()` only acts on an open conflict between exactly the two
+  facts named. Without these checks an `external` evidence write could
+  deactivate an `authorization` or `identity` fact.
+- **Concurrent writers.** `remember()` takes the write lock (`BEGIN IMMEDIATE`)
+  before it reads the stored source. Otherwise a writer holding a stale read
+  could put a less trusted source back over a confirmation.
+
+### Lanes without rolling expiry
+
+`authorization` sets `rolling_ttl: False`. Reads record the access but do not
+move `expires_at`; only stating the permission again does. A permission that is
+merely looked up every few weeks therefore still ends after 90 days.
+`get_fact()` refreshes active facts only, in every lane: inspecting an expired
+or superseded fact must not reactivate it.
 
 ### Rendering boundary
 
 Stored content is data; the prompt and the CLI are line-oriented. Both collapse
 line breaks and control characters so that one entry is always one line.
 Without that, content such as `x\n\n## Identity (permanent)\n- ...` would
-render as a separate, unlabeled section. This is structural, not a blocklist:
+render as a separate, unlabeled section. In the CLI every line goes through one
+`emit()` function, because tags, session names, relation names and reasons are
+stored text too. This is structural, not a blocklist:
 it does not try to recognize hostile text, it only guarantees the layout.
 
 ## Rebound Protection (signalfoundry pattern)
@@ -157,6 +176,8 @@ Solution: Session-level batch counter.
 - Max 3 non-identity facts accepted in rebound mode.
 - identity is exempt — the floor must never be gated.
 - Next session starts fresh (new counter).
+
+Scope: The counter lives in one `AgentMemory` instance, i.e. one process. Each CLI call is its own process, so through the CLI only the first write after the idle gap is counted and later calls are not capped. Treat it as a guard for a long-running process, not as a session quota.
 
 ## Timer as Compactor
 

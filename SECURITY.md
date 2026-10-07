@@ -46,15 +46,24 @@ prompt injection. The project includes deliberate defenses:
 - **Low-trust evidence is labeled and does not outlive its TTL by being shown.**
   Evidence from `inference`, `tool`, or `external` carries its source in the
   prompt, and automatic injection does not refresh its expiry.
-- **Sources do not change by accident.** `supersede` inherits source and
-  confidence; `consolidate()` prefers the more trusted source; a repeat from a
-  more trusted source upgrades, never the reverse.
+- **Sources do not change by accident.** `supersede` inherits lane, source and
+  confidence, and rejects a lane change or a less trusted source;
+  `resolve_conflict` needs an open conflict between the two facts;
+  `consolidate()` prefers the more trusted source; a repeat from a more trusted
+  source upgrades, never the reverse, also under concurrent writers.
+- **Unknown lanes are rejected.** A look-alike authority class such as
+  `Authorization` is not stored under the evidence policy.
+- **Permissions end unless restated.** `authorization` facts are not extended
+  by reads, and looking up an expired or superseded fact does not reactivate
+  it.
 - **Owner-only files.** The database, its WAL/SHM files, snapshots, and the
   default directory are created with `0600` / `0700`, independent of the
   process umask. An existing database is tightened on open. A custom parent
-  directory is left untouched.
-- **Rebound-Protection.** Memory intake is capped after idle phases to limit
-  flooding.
+  directory is left untouched. If the mode cannot be enforced (foreign owner,
+  filesystem without POSIX modes) a `RuntimeWarning` names the file; with
+  `AGENT_MEMORY_STRICT_PERMISSIONS=1` opening fails instead.
+- **Rebound-Protection.** Memory intake is capped after idle phases within one
+  process. See the limitation below for CLI use.
 - **Audit trail and recovery.** Writes and policy decisions are audited;
   snapshots allow rollback, and rapid-change write patterns are flagged by
   anomaly detection. Audit history is retention-bounded.
@@ -76,6 +85,15 @@ prompt injection. The project includes deliberate defenses:
   file as the data, is pruned by retention, and is not tamper-evident. Anyone
   who can write the database can alter it. It supports debugging and review of
   an honest system, not forensics against an attacker with file access.
+- **The human review-gate is a status change, not an identity check.**
+  `approve_rule()` cannot tell who is calling. An agent with access to the CLI
+  or the Python API can approve its own proposal. The host must keep
+  `approve-rule` away from the agent or require a real confirmation; the skill
+  tells the agent not to use it, which is an instruction, not a control.
+- **Rebound-Protection counts per process.** The counter is held in one
+  `AgentMemory` instance. Separate CLI calls are separate processes, so only the
+  first write after an idle gap is counted there. It does not cap flooding
+  through repeated CLI calls.
 - **Rule-text sanitization is a short blocklist.** It removes code fences and a
   few known phrases from procedural rules. The control for rules is the human
   review-gate; do not rely on the sanitizer to catch hostile wording.
