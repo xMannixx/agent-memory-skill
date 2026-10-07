@@ -1,9 +1,11 @@
 import sys
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from text_norm import expand, fold, query_terms, stem_de
+from text_norm import expand, fold, one_line, query_terms, stem_de
 
 
 SEED_SYNONYMS = {
@@ -39,3 +41,14 @@ def test_expand_reverse_maps_synonym_to_canonical_term():
     assert expanded[0] == "vps"
     assert "server" in expanded
     assert "host" in expanded
+
+
+@pytest.mark.parametrize("separator", [
+    "\n", "\r\n", "\r", "\x0b", "\x0c", "\x85", "\u2028", "\u2029",
+])
+def test_one_line_collapses_every_kind_of_line_break(separator):
+    assert one_line(f"first{separator}second") == "first second"
+
+
+def test_one_line_strips_control_characters_and_outer_whitespace():
+    assert one_line("  a\x00b\x1b[0m\t c \n") == "a b [0m c"

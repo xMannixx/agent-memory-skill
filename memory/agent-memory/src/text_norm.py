@@ -63,6 +63,19 @@ _STEM_SUFFIXES = (
 )
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def one_line(text: object) -> str:
+    """Collapse a stored value to a single output line.
+
+    Stored content is printed one record per line. A value with line breaks
+    would otherwise continue past its own record and could imitate another
+    record or section in whatever reads that output.
+    """
+    return re.sub(r"\s+", " ", _CONTROL_CHARS.sub(" ", str(text))).strip()
+
+
 def fold(term: str) -> str:
     """Lowercase a term and fold German umlauts without collapsing meanings."""
     return term.lower().translate(_UMLAUTS)
