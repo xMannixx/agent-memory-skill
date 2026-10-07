@@ -522,7 +522,8 @@ def test_remember_again_from_less_trusted_source_keeps_source(mem):
 
     assert fact.source == "observation"
     assert fact.confidence == 0.8
-    assert not update["metadata"]
+    assert fact.access_count == 1
+    assert update["metadata"] == {"ignored": "less_trusted_repeat"}
 
 
 def test_supersede_inherits_source_and_confidence(mem):
@@ -852,6 +853,197 @@ def test_reviving_a_dropped_identity_fact_reopens_the_conflict(mem):
                  confidence=1.0)
 
     assert mem.stats()["open_conflicts"] == 1
+
+
+def test_consolidate_gives_no_confidence_for_same_trust_contradictions(mem):
+    target = mem.remember("Deploy target is prod-eu-1", tags=["deploy"],
+                          source="observation", confidence=0.7)
+    for index in range(4):
+        mem.remember(f"Deploy target is staging-{index}, not prod-eu-1",
+                     tags=["deploy"], source="observation", confidence=0.6)
+
+    mem.consolidate()
+    survivor = mem.list_facts()[0]
+
+    assert survivor.id == target
+    assert survivor.confidence == pytest.approx(0.7)
+
+
+def test_replaying_a_retired_contradiction_does_not_ratchet_confidence(mem):
+    target = mem.remember("Package is safe", tags=["package"],
+                          source="external", confidence=0.6)
+    for _ in range(8):
+        mem.remember("Package is unsafe", tags=["package"],
+                     source="external", confidence=0.5)
+        mem.consolidate()
+
+    survivor = mem.list_facts()[0]
+
+    assert survivor.id == target
+    assert survivor.confidence == pytest.approx(0.6)
+
+
+def _run_against_paused_writer(paused_call, confirm):
+    """Start `paused_call`, let it pause inside its work, run `confirm` in a
+    second thread, then release. Returns the errors raised in either thread."""
+    errors = []
+
+    def guarded(fn):
+        def run():
+            try:
+                fn()
+            except BaseException as exc:  # surfaced through the return value
+                errors.append(repr(exc))
+        return run
+
+    slow = threading.Thread(target=guarded(paused_call))
+    fast = threading.Thread(target=guarded(confirm))
+    slow.start()
+    assert _run_against_paused_writer.paused.wait(5)
+    fast.start()
+    fast.join(0.3)  # without the shared write lock the confirmation lands here
+    _run_against_paused_writer.release.set()
+    slow.join(10)
+    fast.join(10)
+    return errors
+
+
+def test_supersede_does_not_retire_a_fact_confirmed_meanwhile(tmp_path):
+    db_path = str(tmp_path / "supersede-race.db")
+    old = AgentMemory(db_path=db_path).remember(
+        "Deploy target is prod-eu-1", source="external", confidence=0.6)
+    paused, release = threading.Event(), threading.Event()
+    _run_against_paused_writer.paused = paused
+    _run_against_paused_writer.release = release
+
+    class PausedSupersede(AgentMemory):
+        def remember(self, *args, **kwargs):
+            paused.set()
+            release.wait(10)
+            return super().remember(*args, **kwargs)
+
+    errors = _run_against_paused_writer(
+        lambda: PausedSupersede(db_path=db_path).supersede(
+            old, "Deploy target is other-host", source="external"),
+        lambda: AgentMemory(db_path=db_path).remember(
+            "Deploy target is prod-eu-1", source="observation", confidence=1.0),
+    )
+
+    active = {f.content: f.source
+              for f in AgentMemory(db_path=db_path).list_facts()}
+    assert errors == []
+    assert active["Deploy target is prod-eu-1"] == "observation"
+
+
+def test_consolidate_does_not_retire_a_fact_confirmed_meanwhile(tmp_path):
+    db_path = str(tmp_path / "consolidate-race.db")
+    mem = AgentMemory(db_path=db_path)
+    mem.remember("Deploy target is staging", tags=["deploy"],
+                 source="external", confidence=0.8)
+    mem.remember("Deploy target is production", tags=["deploy"],
+                 source="external", confidence=0.6)
+    paused, release = threading.Event(), threading.Event()
+    _run_against_paused_writer.paused = paused
+    _run_against_paused_writer.release = release
+
+    class PausedConsolidate(AgentMemory):
+        def list_facts(self, *args, **kwargs):
+            facts = super().list_facts(*args, **kwargs)
+            paused.set()
+            release.wait(10)
+            return facts
+
+    errors = _run_against_paused_writer(
+        lambda: PausedConsolidate(db_path=db_path).consolidate(),
+        lambda: AgentMemory(db_path=db_path).remember(
+            "Deploy target is production", tags=["deploy"],
+            source="observation", confidence=1.0),
+    )
+
+    active = {f.content: f.source
+              for f in AgentMemory(db_path=db_path).list_facts()}
+    assert errors == []
+    assert active["Deploy target is production"] == "observation"
+
+
+def test_supersede_rolls_back_completely_when_it_fails(tmp_path, monkeypatch):
+    mem = AgentMemory(db_path=str(tmp_path / "rollback.db"))
+    old = mem.remember("Deploy target is staging-7", source="observation",
+                       confidence=1.0)
+
+    def boom(conn):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(mem, "_reconcile_conflicts", boom)
+    with pytest.raises(RuntimeError):
+        mem.supersede(old, "Deploy target is staging-8")
+    monkeypatch.undo()
+
+    assert [f.id for f in mem.list_facts()] == [old]
+
+
+def test_supersede_with_identical_text_keeps_the_fact(mem):
+    fact_id = mem.remember("Deploy target is staging-7", source="observation",
+                           confidence=1.0)
+
+    assert mem.supersede(fact_id, "Deploy target is staging-7") == fact_id
+    assert [f.id for f in mem.list_facts()] == [fact_id]
+
+
+def test_expired_fact_cannot_win_a_conflict(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    expired = frozen_mem.remember("Production deployments allowed",
+                                  tags=["production"],
+                                  authority_class="authorization",
+                                  source="observation")
+    frozen_mem.set_now(start + timedelta(days=10))
+    live = frozen_mem.remember("Production deployments require approval",
+                               tags=["production"],
+                               authority_class="authorization",
+                               source="observation")
+    assert len(frozen_mem.get_conflicts()) == 1
+    frozen_mem.set_now(start + timedelta(days=91))
+
+    assert frozen_mem.get_conflicts() == []
+    assert frozen_mem.stats()["open_conflicts"] == 0
+    result = frozen_mem.resolve_conflict(expired, [live])
+
+    assert result["dropped"] == [] and result["skipped"] == [live]
+    assert [f.id for f in frozen_mem.list_facts(
+        authority_class="authorization")] == [live]
+    assert frozen_mem.get_audit(
+        op="conflict_resolve_rejected")[0]["reason"] == "keep_not_active"
+
+
+def test_expired_fact_restated_takes_the_new_source(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    fact_id = frozen_mem.remember("Deploy target is old-prod",
+                                  source="observation", confidence=1.0)
+    frozen_mem.set_now(start + timedelta(days=61))
+    assert frozen_mem.list_facts() == []
+
+    frozen_mem.remember("Deploy target is old-prod", source="external",
+                        confidence=0.5)
+    fact = frozen_mem.list_facts()[0]
+    update = [e for e in frozen_mem.get_provenance(fact_id)
+              if e["op"] == "update"][-1]
+
+    assert (fact.source, fact.confidence) == ("external", 0.5)
+    assert update["metadata"] == {
+        "revived": True, "previous_source": "observation", "was_expired": True,
+    }
+
+
+def test_less_trusted_repeat_does_not_extend_a_fact(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    frozen_mem.remember("Deploy target is prod-eu-1", source="observation",
+                        confidence=1.0)
+    frozen_mem.set_now(start + timedelta(days=50))
+    frozen_mem.remember("Deploy target is prod-eu-1", source="external",
+                        confidence=1.0)
+    frozen_mem.set_now(start + timedelta(days=61))
+
+    assert frozen_mem.list_facts() == []
 
 
 def test_forget_removes_fact_from_fts(mem):
@@ -2323,7 +2515,7 @@ def test_consolidate_merges_duplicate_lane_tag_group(mem):
     assert report["facts_consolidated"] == 1
     assert report["facts_superseded"] == 1
     assert len(active) == 1
-    assert active[0].confidence == pytest.approx(0.85)
+    assert active[0].confidence == pytest.approx(0.8)
     assert active[0].content == "SQLite ist Memory Backend"
 
 
@@ -2477,7 +2669,7 @@ def test_consolidate_is_deterministic(mem):
 
     assert low is not None
     assert report["groups"][0]["representative_id"] == high
-    assert report["groups"][0]["confidence"] == pytest.approx(0.85)
+    assert report["groups"][0]["confidence"] == pytest.approx(0.8)
 
 
 def test_consolidate_idempotent_second_run_noop(mem):
