@@ -7,7 +7,38 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
-## [Unreleased]
+## [3.7.0] - 2026-10-07 - Trust Hardening
+
+A hardening release. It comes out of a review against the "authority collapse"
+failure mode (a memory keeps a claim but loses where it came from) and three
+rounds of external security review, each with reproductions. No schema
+migration: replacing `memory.py`, `text_norm.py`, `fact.py` and the plugin is
+enough.
+
+**Behavior you will notice after upgrading**
+
+- After more than six hours without a write, only three new non-identity facts
+  are accepted in the following hour, also through the CLI. More are rejected
+  (`rebound_reject`) and have to be stored again later.
+- `approve-rule` only works in an interactive terminal and asks for the rule
+  id to be typed.
+- `authorization` facts end 90 days after they were last stated. Reading them
+  no longer extends them.
+- `remember()` rejects unknown authority classes; `remember_snippet()` and
+  `snippet add --source` accept only the five known sources.
+- `supersede` keeps the lane, source and confidence of the fact it replaces and
+  refuses a lane change or a less trusted source.
+- `consolidate` no longer raises confidence, ignores expired and untagged
+  facts, and prefers the more trusted source.
+- `list` and `list_facts()` show active facts only (`--include-expired` /
+  `include_expired=True` for the rest).
+- Evidence from `inference`, `tool` or `external` is labeled in the prompt and
+  does not stay alive by being shown.
+- The database, its WAL/SHM files and snapshots are set to `0600`, the default
+  directory to `0700`.
+
+What this release does not change: the source of a fact is still declared by
+whoever writes it. See [SECURITY.md](SECURITY.md).
 
 ### Security
 - Rebound-Protection now holds across processes. The counter lived on the
