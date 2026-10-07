@@ -80,7 +80,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 243 passed
+# Expected: 250 passed
 ```
 
 ## Authority Lanes
@@ -279,6 +279,8 @@ No manual loading required.
 - `startup_skills` alone is NOT enough for auto-injection. The plugin with `pre_llm_call` hook is required.
 - `authorization` facts from `conversation` source are silently rejected by design.
 - An unknown authority class is rejected (`unknown_authority_class`); it is not stored as evidence.
+- `list` / `list_facts()` show active facts only. Use `list --include-expired` (`include_expired=True`) to inspect expired ones.
+- Storing a fact that was superseded makes it active again with the source you give now. If the replacement should go away, use `supersede <replacement_id> "<old text>"`.
 - `resolve-conflict` only acts on an open conflict between exactly the two facts named; anything else is reported as skipped.
 - Raw snippets are recall memory, not facts. Store them with `remember_snippet()` and search them with `search_snippets()`.
 - The plugin uses character budgets instead of a tokenizer to avoid extra runtime dependencies.

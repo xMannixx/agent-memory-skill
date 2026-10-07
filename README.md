@@ -168,7 +168,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 243 passed
+# Expected: 250 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -262,7 +262,7 @@ python3 $CLI add "Server IP is 10.0.0.1" --authority evidence --source observati
 # Search
 python3 $CLI recall "server"
 
-# List all facts of a class
+# List all active facts of a class (add --include-expired to see expired ones)
 python3 $CLI list --authority identity
 
 # Stats
