@@ -144,6 +144,16 @@ AUDIT_RETENTION_DAYS = 90
 STATS_LATENCY_WINDOW = 200
 
 
+def _owner_only(path: Path, mode: int) -> None:
+    """Best-effort chmod. Memory files hold conversation content in plaintext,
+    so they should not depend on the process umask to stay private."""
+    try:
+        if path.stat().st_mode & 0o7777 != mode:
+            path.chmod(mode)
+    except OSError:
+        pass
+
+
 @dataclass
 class Fact:
     id: str
@@ -248,6 +258,7 @@ class AgentMemory:
         if db_path is None:
             db_dir = Path.home() / ".hermes" / "agent-memory"
             db_dir.mkdir(parents=True, exist_ok=True)
+            _owner_only(db_dir, 0o700)
             db_path = str(db_dir / "memory.db")
 
         self.db_path = db_path
@@ -268,10 +279,26 @@ class AgentMemory:
         else:
             self._snapshot_dir = Path(db_path).parent / "snapshots"
             self._snapshot_dir.mkdir(parents=True, exist_ok=True)
+            _owner_only(self._snapshot_dir, 0o700)
+            # Create the file owner-only before SQLite opens it; the WAL and
+            # SHM files inherit the database file's mode.
+            self._create_private_file(Path(db_path))
 
         self._init_db()
+        if db_path != ":memory:":
+            for suffix in ("", "-wal", "-shm"):
+                _owner_only(Path(db_path + suffix), 0o600)
         self._synonyms = self._load_synonyms()
         self._check_rebound()
+
+    @staticmethod
+    def _create_private_file(path: Path) -> None:
+        if not path.exists():
+            try:
+                path.touch(mode=0o600)
+            except OSError:
+                pass
+        _owner_only(path, 0o600)
 
     def _connect(self):
         """Returns (conn, should_close)."""
@@ -1156,17 +1183,34 @@ class AgentMemory:
 
         conn, should_close = self._connect()
         cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM facts WHERE id = ?", (fact_id,))
-        exists = cursor.fetchone() is not None
+        cursor.execute("SELECT source FROM facts WHERE id = ?", (fact_id,))
+        existing = cursor.fetchone()
+        exists = existing is not None
 
         if exists:
             self._touch(conn, [fact_id])
+            # Same content from a more trusted source confirms the fact: adopt
+            # that source. A less trusted repeat never downgrades it.
+            stored_source = existing[0]
+            upgraded = (
+                _SOURCE_TRUST_RANK.get(source, -1)
+                > _SOURCE_TRUST_RANK.get(stored_source, -1)
+            )
+            if upgraded:
+                cursor.execute(
+                    "UPDATE facts SET source = ?, confidence = MAX(confidence, ?) "
+                    "WHERE id = ?",
+                    (source, confidence, fact_id)
+                )
             self._audit(
                 "update",
                 fact_id=fact_id,
                 content=content,
                 authority_class=authority_class,
                 source=source,
+                metadata=(
+                    {"source_upgraded_from": stored_source} if upgraded else None
+                ),
                 conn=conn,
             )
             conn.commit()
@@ -1576,6 +1620,25 @@ class AgentMemory:
         return report
 
     def supersede(self, old_fact_id: str, new_content: str, **kwargs) -> Optional[str]:
+        """Replaces a fact with new content.
+
+        Unless the caller names them, the replacement inherits the old fact's
+        source and confidence: rewording a fact must not make it look more
+        trusted than what it replaces.
+        """
+        conn, should_close = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT source, confidence FROM facts WHERE id = ?",
+                (old_fact_id,)
+            ).fetchone()
+        finally:
+            if should_close:
+                conn.close()
+        if row:
+            kwargs.setdefault("source", row[0])
+            kwargs.setdefault("confidence", row[1])
+
         new_id = self.remember(new_content, **kwargs)
         if not new_id:
             return None
@@ -2397,6 +2460,7 @@ class AgentMemory:
 
     def _backup_to(self, dest_path: Path):
         """Copies current DB via SQLite's backup API to dest_path."""
+        self._create_private_file(Path(dest_path))
         target = sqlite3.connect(str(dest_path))
         try:
             if self._shared_conn is not None:
