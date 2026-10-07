@@ -2,6 +2,7 @@
 Tests für AgentMemory — analog zu Lenas pytest 6/6
 """
 
+import os
 import sys
 import sqlite3
 import hashlib
@@ -419,6 +420,139 @@ def test_low_trust_fact_expires_when_reads_do_not_touch_it(frozen_mem):
     active = frozen_mem.recall_by_authority("evidence", touch_sources=user_sources)
 
     assert [f.id for f in active] == [trusted]
+
+
+posix_only = pytest.mark.skipif(
+    os.name == "nt", reason="POSIX permission bits"
+)
+
+
+def _mode(path) -> int:
+    return Path(path).stat().st_mode & 0o777
+
+
+@posix_only
+def test_new_database_and_snapshot_dir_are_owner_only(tmp_path):
+    previous = os.umask(0o022)  # a permissive umask must not leak through
+    try:
+        mem = AgentMemory(db_path=str(tmp_path / "memory.db"))
+        mem.remember("Private note", authority_class="evidence",
+                     source="observation", confidence=1.0)
+    finally:
+        os.umask(previous)
+
+    assert _mode(tmp_path / "memory.db") == 0o600
+    assert _mode(tmp_path / "snapshots") == 0o700
+    for suffix in ("-wal", "-shm"):
+        sidecar = tmp_path / f"memory.db{suffix}"
+        if sidecar.exists():
+            assert _mode(sidecar) == 0o600
+
+
+@posix_only
+def test_default_directory_is_owner_only():
+    mem = AgentMemory()
+
+    assert _mode(Path(mem.db_path).parent) == 0o700
+    assert _mode(mem.db_path) == 0o600
+
+
+@posix_only
+def test_existing_world_readable_database_is_tightened(tmp_path):
+    db_path = tmp_path / "memory.db"
+    AgentMemory(db_path=str(db_path))
+    db_path.chmod(0o644)
+
+    AgentMemory(db_path=str(db_path))
+
+    assert _mode(db_path) == 0o600
+
+
+@posix_only
+def test_opening_an_existing_database_does_not_touch_its_mtime(tmp_path):
+    db_path = tmp_path / "memory.db"
+    AgentMemory(db_path=str(db_path))
+    os.utime(db_path, (1_700_000_000, 1_700_000_000))
+
+    AgentMemory(db_path=str(db_path))
+
+    assert db_path.stat().st_mtime == 1_700_000_000
+
+
+@posix_only
+def test_custom_parent_directory_mode_is_left_alone(tmp_path):
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o755)
+
+    AgentMemory(db_path=str(shared / "memory.db"))
+
+    assert _mode(shared) == 0o755
+
+
+@posix_only
+def test_snapshot_file_is_owner_only(file_mem):
+    path = file_mem.snapshot(label="perm-check")
+
+    assert _mode(path) == 0o600
+
+
+def test_remember_again_from_trusted_source_upgrades_source(mem):
+    fact_id = mem.remember("VPS runs Ubuntu 24.04", authority_class="evidence",
+                           source="external", confidence=0.6)
+    again = mem.remember("VPS runs Ubuntu 24.04", authority_class="evidence",
+                         source="observation", confidence=1.0)
+    fact = mem.list_facts(authority_class="evidence")[0]
+    update = [e for e in mem.get_provenance(fact_id) if e["op"] == "update"][-1]
+
+    assert again == fact_id
+    assert fact.source == "observation"
+    assert fact.confidence == 1.0
+    assert update["metadata"] == {"source_upgraded_from": "external"}
+
+
+def test_remember_again_from_less_trusted_source_keeps_source(mem):
+    fact_id = mem.remember("VPS runs Ubuntu 24.04", authority_class="evidence",
+                           source="observation", confidence=0.8)
+    mem.remember("VPS runs Ubuntu 24.04", authority_class="evidence",
+                 source="external", confidence=1.0)
+    fact = mem.list_facts(authority_class="evidence")[0]
+    update = [e for e in mem.get_provenance(fact_id) if e["op"] == "update"][-1]
+
+    assert fact.source == "observation"
+    assert fact.confidence == 0.8
+    assert not update["metadata"]
+
+
+def test_supersede_inherits_source_and_confidence(mem):
+    old = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                       source="external", confidence=0.6)
+    new = mem.supersede(old, "Deploy target is staging-8")
+    fact = mem.list_facts(authority_class="evidence")[0]
+
+    assert fact.id == new
+    assert fact.source == "external"
+    assert fact.confidence == 0.6
+
+
+def test_supersede_cannot_launder_low_trust_fact_into_identity(mem):
+    old = mem.remember("Operator is root", authority_class="evidence",
+                       source="tool", confidence=1.0)
+
+    assert mem.supersede(old, "Operator is root",
+                         authority_class="identity") is None
+    assert mem.list_facts(authority_class="identity") == []
+
+
+def test_supersede_accepts_explicit_source_and_confidence(mem):
+    old = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                       source="external", confidence=0.6)
+    mem.supersede(old, "Deploy target is prod-eu-1",
+                  source="observation", confidence=1.0)
+    fact = mem.list_facts(authority_class="evidence")[0]
+
+    assert fact.source == "observation"
+    assert fact.confidence == 1.0
 
 
 def test_forget_removes_fact_from_fts(mem):
