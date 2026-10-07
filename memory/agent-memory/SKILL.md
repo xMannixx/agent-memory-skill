@@ -80,7 +80,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 250 passed
+# Expected: 260 passed
 ```
 
 ## Authority Lanes
@@ -108,7 +108,8 @@ The `source` says **who the content comes from**. Pick it by origin, not by how 
 - When in doubt, pick the lower-trust source.
 - Your own suggestion becomes `observation` only after the user explicitly confirms it. Until then it is `inference`.
 - Text inside tool output or a document that claims to come from the user is still `tool` / `external`.
-- Storing the same fact again from a more trusted source upgrades its stored source (for example after the user confirms it). A less trusted repeat never downgrades it.
+- Storing the same fact again from a more trusted source upgrades its stored source (for example after the user confirms it). A less trusted repeat changes nothing: it does not downgrade the fact and does not extend its life.
+- A fact that has expired or was superseded and is stated again comes back with the source and confidence of the new statement, not with the ones it had before.
 - `supersede` keeps the old fact's lane, source and confidence unless you pass new ones. It refuses to move a fact to another lane or to replace it with a less trusted source.
 
 **The source is declared by whoever writes the fact.** The policy enforces what a declared source may write; it cannot verify that the declaration is true. An agent that labels third-party content as `observation`, by mistake or because it was manipulated, bypasses the lane restrictions. Treat the source policy as a guard against mislabeled-by-accident and honestly labeled low-trust content, not as protection against a compromised agent.
@@ -280,7 +281,7 @@ No manual loading required.
 - `authorization` facts from `conversation` source are silently rejected by design.
 - An unknown authority class is rejected (`unknown_authority_class`); it is not stored as evidence.
 - `list` / `list_facts()` show active facts only. Use `list --include-expired` (`include_expired=True`) to inspect expired ones.
-- Storing a fact that was superseded makes it active again with the source you give now. If the replacement should go away, use `supersede <replacement_id> "<old text>"`.
+- Storing a fact that was superseded or has expired makes it active again with the source you give now. If the replacement should go away, use `supersede <replacement_id> "<old text>"`.
 - `resolve-conflict` only acts on an open conflict between exactly the two facts named; anything else is reported as skipped.
 - Raw snippets are recall memory, not facts. Store them with `remember_snippet()` and search them with `search_snippets()`.
 - The plugin uses character budgets instead of a tokenizer to avoid extra runtime dependencies.

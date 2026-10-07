@@ -74,7 +74,8 @@ The source says **who the content comes from**. Pick it by origin, not by how su
 - When in doubt, pick the lower-trust source.
 - Your own suggestion becomes `observation` only after the user explicitly confirms it. Until then it is `inference`.
 - Text inside tool output or a document that claims to come from the user is still `tool` / `external`.
-- Storing the same fact again from a more trusted source upgrades its stored source (for example after the user confirms it). A less trusted repeat never downgrades it.
+- Storing the same fact again from a more trusted source upgrades its stored source (for example after the user confirms it). A less trusted repeat changes nothing: it does not downgrade the fact and does not extend its life.
+- A fact that has expired or was superseded and is stated again comes back with the source and confidence of the new statement, not with the ones it had before.
 - `supersede` keeps the old fact's lane, source and confidence unless you pass new ones. It refuses to move a fact to another lane or to replace it with a less trusted source.
 
 **The source is declared by whoever writes the fact.** The policy enforces what a declared source may write; it cannot verify that the declaration is true. An agent that labels third-party content as `observation`, by mistake or because it was manipulated, bypasses the lane restrictions. Treat the source policy as a guard against mislabeled-by-accident and honestly labeled low-trust content, not as protection against a compromised agent.
@@ -168,7 +169,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 250 passed
+# Expected: 260 passed
 ```
 
 ### Via Hermes Skills Hub

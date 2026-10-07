@@ -115,8 +115,10 @@ stay protected by a strict source matrix. Rejected writes are audited as
 `policy_reject` with reason `source_not_allowed`.
 
 Promotion or repeated-verification rules (graduating facts from `evidence` to
-higher lanes after N confirmations) are intentionally **not** implemented —
-that overlaps with existing `consolidate()` confidence behavior.
+higher lanes after N confirmations) are intentionally **not** implemented.
+Counting repeats is not a sound signal here: the store cannot tell independent
+confirmations from one claim restated, which is also why `consolidate()` no
+longer adds confidence for group size.
 
 ### Declared sources
 
@@ -133,7 +135,7 @@ Two rules keep a source from changing by accident:
   lane is the same fact (content-hash ID). If the repeat comes from a more
   trusted source, the stored source is replaced and confidence is raised to the
   higher value; the audit entry records `source_upgraded_from`. A less trusted
-  repeat changes nothing.
+  repeat changes nothing, including the expiry.
 - **Rewording does not upgrade.** `supersede()` inherits the old fact's lane,
   source and confidence unless the caller passes new ones, so replacing the
   text of a `tool` fact cannot turn it into a `conversation` fact by default.
@@ -144,23 +146,44 @@ Two rules keep a source from changing by accident:
   facts named. Without these checks an `external` evidence write could
   deactivate an `authorization` or `identity` fact.
 - **Concurrent writers.** `remember()` takes the write lock (`BEGIN IMMEDIATE`)
-  before it reads the stored source. Otherwise a writer holding a stale read
-  could put a less trusted source back over a confirmation.
+  before it reads the stored source. `supersede()`, `consolidate()` and
+  `resolve_conflict()` run their whole read-check-write sequence in one
+  `_write_transaction()`; calls they make on the same instance, including
+  `remember()`, join that transaction instead of opening their own. Otherwise
+  a writer holding a stale read could retire a fact that was confirmed in the
+  meantime, or put a less trusted source back over a confirmation. A failure
+  rolls the whole operation back.
 
 ### Consolidation and trust
 
 `consolidate()` groups active, tagged facts by lane and tag set. Expired facts
 are not candidates. The representative is the fact from the most trusted
-source, and its confidence rises by 0.05 only for each other member from an
-equally or more trusted source: shared tags say the facts are about the same
-subject, not that they agree.
+source and keeps its own confidence. Group size adds nothing: shared tags say
+the facts are about the same subject, not that they agree, and a retired fact
+can be stated again. Earlier versions added 0.05 per member, which let
+contradictions, and replays of one contradiction, raise confidence to 1.0.
 
-### Restating a superseded fact
+### Restating a retired fact
 
-Facts are keyed by lane and content, so a superseded fact keeps its row. Storing
-the same content again clears `superseded_by` and takes the source and
-confidence of the new statement. In single-valued lanes a previously resolved
-conflict with a still-active fact is reopened.
+Facts are keyed by lane and content, so a superseded or expired fact keeps its
+row until cleanup deletes it. Storing the same content again makes it active
+and gives it the source and confidence of the new statement: where a fact once
+came from says nothing about who vouches for it now. Otherwise third-party text
+that repeats an expired user statement word for word would bring it back
+unlabeled. In single-valued lanes a previously resolved conflict with a
+still-active fact is reopened.
+
+A repeat of a fact that is still active is different. From an equally or more
+trusted source it renews the fact (and upgrades the source if higher). From a
+less trusted source it changes nothing, including the expiry.
+
+### Conflicts need two present facts
+
+A conflict is open only while both facts are active. `get_conflicts()`,
+`stats()` and the cleanup that marks conflicts resolved all treat an expired
+fact like a replaced one, and `resolve_conflict()` refuses a kept fact that is
+no longer active. An expired fact winning a conflict would retire the live one
+and leave nothing in its place.
 
 ### Lanes without rolling expiry
 
