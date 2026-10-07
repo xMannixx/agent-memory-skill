@@ -7,7 +7,15 @@ import argparse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-from memory import AgentMemory, AUTHORITY_POLICY
+from memory import AgentMemory, AUTHORITY_POLICY, KNOWN_SOURCES
+from text_norm import one_line
+
+SOURCE_HELP = (
+    "Where the content comes from: observation = the user stated it explicitly; "
+    "conversation = from the user's messages but implied or summarized; "
+    "inference = your own conclusion or suggestion; tool = tool or command "
+    "output; external = third-party content (web, documents, other people)."
+)
 
 
 def main():
@@ -20,13 +28,7 @@ def main():
     add_p.add_argument("content", help="The fact")
     add_p.add_argument("--tags", "-t", nargs="+", default=[], help="Tags")
     add_p.add_argument("--source", "-s", default="conversation",
-                       choices=[
-                           "observation",
-                           "conversation",
-                           "inference",
-                           "tool",
-                           "external",
-                       ])
+                       choices=list(KNOWN_SOURCES), help=SOURCE_HELP)
     add_p.add_argument("--confidence", "-c", type=float, default=0.9)
     add_p.add_argument("--authority", "-a", default="evidence",
                        choices=list(AUTHORITY_POLICY.keys()),
@@ -54,6 +56,12 @@ def main():
     sup_p.add_argument("new_content")
     sup_p.add_argument("--authority", "-a", default="evidence",
                        choices=list(AUTHORITY_POLICY.keys()))
+    sup_p.add_argument("--source", "-s", default=None,
+                       choices=list(KNOWN_SOURCES),
+                       help="Source of the new content (default: inherit from "
+                            "the replaced fact). " + SOURCE_HELP)
+    sup_p.add_argument("--confidence", "-c", type=float, default=None,
+                       help="Confidence of the new content (default: inherit)")
 
     # forget
     subparsers.add_parser("forget-stale", help="Delete expired facts (Policy TTL)")
@@ -233,7 +241,7 @@ def main():
             expires_in_days=args.expires
         )
         if fact_id:
-            print(f"OK [{fact_id}] ({args.authority}): {args.content[:60]}")
+            print(f"OK [{fact_id}] ({args.authority}): {one_line(args.content)[:60]}")
         else:
             print(f"REJECTED — Authority policy or rebound protection took effect")
 
@@ -244,21 +252,26 @@ def main():
             print("No matches.")
         for f in facts:
             tags = " ".join(f"#{t}" for t in f.tags) if f.tags else ""
-            print(f"[{f.id}] ({f.authority_class}/{f.source} conf={f.confidence}) {f.content} {tags}")
+            print(f"[{f.id}] ({f.authority_class}/{f.source} conf={f.confidence}) {one_line(f.content)} {tags}")
 
     elif args.command == "list":
         facts = mem.list_facts(tags=args.tags, limit=args.limit,
                                authority_class=args.authority)
         for f in facts:
             tags = " ".join(f"#{t}" for t in f.tags) if f.tags else ""
-            print(f"[{f.id}] ({f.authority_class}) {f.content[:70]} {tags}")
+            print(f"[{f.id}] ({f.authority_class}) {one_line(f.content)[:70]} {tags}")
 
     elif args.command == "supersede":
         if not mem.get_fact(args.fact_id):
             print(f"ERROR — fact_id '{args.fact_id}' not found; nothing superseded.", file=sys.stderr)
             sys.exit(1)
+        overrides = {}
+        if args.source is not None:
+            overrides["source"] = args.source
+        if args.confidence is not None:
+            overrides["confidence"] = args.confidence
         new_id = mem.supersede(args.fact_id, args.new_content,
-                               authority_class=args.authority)
+                               authority_class=args.authority, **overrides)
         if new_id:
             print(f"OK [{new_id}] replaces {args.fact_id}")
         else:
@@ -331,12 +344,12 @@ def main():
             print("No relations found.")
         for rel in relations:
             attrs = f" {rel['attributes']}" if rel["attributes"] else ""
-            print(
+            print(one_line(
                 f"[{rel['id']}] "
                 f"{rel['from_name']} ({rel['from_type']}) "
                 f"--{rel['predicate']}--> "
                 f"{rel['to_name']} ({rel['to_type']}){attrs}"
-            )
+            ))
 
     elif args.command == "conflicts":
         conflicts = mem.get_conflicts(include_resolved=args.all)
@@ -351,8 +364,8 @@ def main():
                 f"[{conflict['id']}] {status} "
                 f"{conflict['lane']} tags={tags}"
             )
-            print(f"  A [{a['id']}]: {a['content']}")
-            print(f"  B [{b['id']}]: {b['content']}")
+            print(f"  A [{a['id']}]: {one_line(a['content'])}")
+            print(f"  B [{b['id']}]: {one_line(b['content'])}")
 
     elif args.command == "resolve-conflict":
         result = mem.resolve_conflict(args.keep_id, args.drop_ids)
@@ -372,7 +385,7 @@ def main():
         if not lessons:
             print("No lessons found.")
         for l in lessons:
-            print(f"[{l.id}] [{l.outcome}] {l.action} → {l.insight}")
+            print(one_line(f"[{l.id}] [{l.outcome}] {l.action} → {l.insight}"))
 
     elif args.command == "audit":
         entries = mem.get_audit(limit=args.limit, op=args.op)
@@ -500,10 +513,10 @@ def main():
         if not rules:
             print("No pending rules.")
         for r in rules:
-            print(
+            print(one_line(
                 f"[{r.id}] ({r.domain}, prio={r.priority}, "
                 f"cost={r.artifact_cost}) {r.behavior_text}"
-            )
+            ))
 
     elif args.command == "active-rules":
         rules = mem.get_active_rules(domain=args.domain)
@@ -511,10 +524,10 @@ def main():
             print("No active rules.")
         for r in rules:
             expires = f" expires={r.expires_at[:10]}" if r.expires_at else ""
-            print(
+            print(one_line(
                 f"[{r.id}] ({r.domain}, prio={r.priority}){expires} "
                 f"{r.behavior_text}"
-            )
+            ))
 
     elif args.command == "approve-rule":
         result = mem.approve_rule(
@@ -585,7 +598,7 @@ def main():
                 session = f" session={snippet.session_id}" if snippet.session_id else ""
                 print(
                     f"[{snippet.id}] ({snippet.source}{session}) "
-                    f"{snippet.content[:100]}"
+                    f"{one_line(snippet.content)[:100]}"
                 )
 
 
