@@ -20,6 +20,7 @@ The roadmap is organized by release milestones. Each item is tracked as a GitHub
 | [v3.4 - Source Trust](https://github.com/xMannixx/agent-memory-skill/milestone/10) | Finer source categories (`tool`, `external`) and per-lane source matrix; lower-trust input quarantined to `evidence`. | Complete |
 | [v3.5 - Provenance](https://github.com/xMannixx/agent-memory-skill/milestone/11) | Read-only provenance view derived from the append-only audit log; `get_provenance()` and CLI `provenance` command. | Complete |
 | [v3.6 - Procedural Lane](https://github.com/xMannixx/agent-memory-skill/milestone/12) | Fifth authority class for self-written behavioral rules: observation-only writes, a mandatory human review-gate (no auto-approve), deterministic rule-conflict / artifact-bloat detection, and bounded, query-aware prompt injection. | Complete |
+| v3.7 - Trust Hardening | Sources that survive rewriting and concurrent writers, single-line rendering in prompt and CLI, labeled low-trust evidence, owner-only files, a rebound cap that holds across processes, and an interactive gate for rule approval. | Complete |
 
 ## Priority Tiers
 
@@ -212,6 +213,36 @@ observation-events pipeline, rule-set version snapshots, precedence
 cycle-detection, and auto-demotion of unused rules (match telemetry is captured
 via `match_count` / `last_matched_at` as the foundation). Still open:
 multi-agent namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
+
+### v3.7 - Trust Hardening
+
+No new lane and no new feature surface: this release makes the existing trust
+model hold where it did not. It started from a review against "authority
+collapse" (a memory keeps a claim but loses where it came from) and went
+through three rounds of external security review with reproductions.
+
+1. **The source reaches the model and survives rewriting** — Evidence from
+   `inference`, `tool` or `external` is labeled in the prompt. `supersede()`
+   keeps lane, source and confidence; `consolidate()` prefers the more trusted
+   source and no longer raises confidence; a repeat from a more trusted source
+   upgrades, a less trusted one changes nothing; a fact that expired or was
+   replaced and is stated again takes the source of the new statement.
+2. **One entry, one line** — Prompt entries and every CLI line collapse line
+   breaks and control characters, so stored text cannot imitate another entry,
+   a section, or a status message.
+3. **Decisions and writes share one lock** — `remember()`, `supersede()`,
+   `consolidate()` and `resolve_conflict()` read, check and write in one write
+   transaction that inner calls join.
+4. **Limits that hold in practice** — The rebound window is stored in the
+   database and applies across CLI calls; `authorization` facts are not
+   extended by reads; an expired fact cannot be revived by a lookup or win a
+   conflict; unknown lanes and snippet sources are rejected.
+5. **Operator side** — Owner-only file modes with a strict mode, an interactive
+   terminal for `approve-rule`, and source definitions in SKILL.md and README.
+
+Documented, not solved: the source is declared by the writer, and rule approval
+is not an identity check. Both need the host. Still open: multi-agent
+namespaces ([#10](https://github.com/xMannixx/agent-memory-skill/issues/10)).
 
 ## References
 
