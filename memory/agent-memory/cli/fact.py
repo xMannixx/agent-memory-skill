@@ -30,6 +30,42 @@ def emit(text: object = "", **kwargs) -> None:
     print(strip_control(text), **kwargs)
 
 
+def confirm_rule_approval(mem, rule_id: str) -> bool:
+    """The human side of the review-gate for `approve-rule`.
+
+    A rule changes how the agent behaves, so the agent must not be able to
+    wave its own proposal through with a one-line command. This refuses to
+    run from a pipe or script, shows the rule, and has the person type its
+    id. It is a speed bump, not an identity check: a caller with a
+    pseudo-terminal or the Python API can still approve.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        emit("REFUSED — approve-rule must be run by a person in an interactive "
+             "terminal.", file=sys.stderr)
+        emit("An agent must not approve its own rules. Ask the operator to run "
+             "this command.", file=sys.stderr)
+        return False
+
+    rule = next((r for r in mem.get_pending_rules() if r.id == rule_id), None)
+    if rule is None:
+        emit(f"ERROR — {rule_id} not found or not pending")
+        return False
+
+    emit(f"Rule    : [{rule.id}] ({rule.domain}, prio={rule.priority}, "
+         f"cost={rule.artifact_cost})")
+    emit(f"Behavior: {one_line(rule.behavior_text)}")
+    emit(f"Trigger : {one_line(json.dumps(rule.trigger, sort_keys=True))}")
+    emit(f"Effect  : {one_line(json.dumps(rule.effect, sort_keys=True))}")
+    try:
+        typed = input("Type the rule id to approve: ").strip()
+    except EOFError:
+        typed = ""
+    if typed != rule.id:
+        emit("NOT APPROVED — the typed id does not match.")
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Hermes Agent Memory CLI")
     parser.add_argument("--db", help="Database path", default=None)
@@ -225,7 +261,9 @@ def main():
     )
     active_rules_p.add_argument("--domain", default=None)
 
-    approve_p = subparsers.add_parser("approve-rule", help="Approve a pending rule")
+    approve_p = subparsers.add_parser(
+        "approve-rule",
+        help="Approve a pending rule (interactive: for the human operator)")
     approve_p.add_argument("rule_id")
     approve_p.add_argument("--ack-interactions", action="store_true",
                            dest="ack_interactions",
@@ -557,6 +595,8 @@ def main():
             ))
 
     elif args.command == "approve-rule":
+        if not confirm_rule_approval(mem, args.rule_id):
+            sys.exit(2)
         result = mem.approve_rule(
             args.rule_id,
             approved_by=args.approved_by,

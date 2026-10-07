@@ -1,8 +1,11 @@
 """Tests for the fact.py command line."""
 
+import os
+import select
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -151,4 +154,92 @@ def test_cli_list_hides_expired_facts_unless_asked(cli):
 
     assert cli("list") == ""
     assert "(evidence) [expired] Stale note" in cli("list", "--include-expired")
+
+
+def test_cli_rebound_cap_holds_across_calls(cli):
+    cli("add", "Baseline", "--authority", "evidence", "--source", "conversation")
+    seven_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    conn = sqlite3.connect(cli.db_path)
+    conn.execute("UPDATE memory_meta SET value = ? WHERE key = 'last_write'",
+                 (seven_hours_ago,))
+    conn.commit()
+    conn.close()
+
+    outputs = [
+        cli("add", f"Post-idle fact {index}", "--authority", "evidence",
+            "--source", "external")
+        for index in range(6)
+    ]
+
+    assert [out.startswith("OK [") for out in outputs] == \
+        [True, True, True, False, False, False]
+    assert all(out.startswith("REJECTED") for out in outputs[3:])
+
+
+def _propose_rule(cli):
+    return _new_id(cli("propose-rule", "--domain", "language",
+                       "--effect", '{"language": "en"}',
+                       "--behavior", "Always answer in English"))
+
+
+def test_cli_approve_rule_refuses_without_a_terminal(cli):
+    rule_id = _propose_rule(cli)
+
+    result = cli("approve-rule", rule_id, "--by", "agent", check=False)
+
+    assert result.returncode == 2
+    assert "REFUSED" in result.stderr
+    assert rule_id in cli("pending-rules")
+    assert cli("active-rules").startswith("No active rules")
+
+
+def _run_in_terminal(cli, typed, *args):
+    """Run the CLI attached to a pseudo-terminal and type one line into it."""
+    import pty
+
+    master, slave = pty.openpty()
+    proc = subprocess.Popen(
+        [sys.executable, str(CLI), "--db", cli.db_path, *args],
+        stdin=slave, stdout=slave, stderr=slave, close_fds=True,
+    )
+    os.close(slave)
+    os.write(master, (typed + "\n").encode())
+    output = b""
+    while select.select([master], [], [], 10)[0]:
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:  # the child closed its side
+            break
+        if not chunk:
+            break
+        output += chunk
+    proc.wait(timeout=10)
+    os.close(master)
+    return proc.returncode, output.decode(errors="replace")
+
+
+posix_terminal = pytest.mark.skipif(os.name == "nt", reason="needs a POSIX pty")
+
+
+@posix_terminal
+def test_cli_approve_rule_in_a_terminal_needs_the_typed_rule_id(cli):
+    rule_id = _propose_rule(cli)
+
+    code, output = _run_in_terminal(cli, rule_id, "approve-rule", rule_id)
+
+    assert code == 0
+    assert "Always answer in English" in output
+    assert f"OK approved [{rule_id}]" in output
+    assert rule_id in cli("active-rules")
+
+
+@posix_terminal
+def test_cli_approve_rule_in_a_terminal_rejects_a_wrong_answer(cli):
+    rule_id = _propose_rule(cli)
+
+    code, output = _run_in_terminal(cli, "yes", "approve-rule", rule_id)
+
+    assert code == 2
+    assert "NOT APPROVED" in output
+    assert cli("active-rules").startswith("No active rules")
 
