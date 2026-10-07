@@ -9,13 +9,41 @@ links the issues it closed.
 
 ## [Unreleased]
 
+### Security
+- Injected entries and CLI output are rendered on exactly one line. Stored
+  content containing line breaks could continue past its own list item and
+  imitate another entry or a whole section — for example a fake
+  `## Identity (permanent)` or `## Procedural Rules` block — and leave its
+  source label behind on the first line. Line breaks and control characters are
+  now collapsed at the rendering boundary (plugin and CLI).
+- The database, its WAL/SHM files, snapshots, and the default directory are
+  created owner-only (`0600` / `0700`) instead of depending on the process
+  umask. An existing database is tightened on open; a custom parent directory
+  is not touched.
+- `supersede()` inherits the old fact's source and confidence unless the caller
+  passes new ones. Previously the replacement defaulted to `conversation` at
+  confidence 1.0, so rewording a `tool` or `external` fact upgraded it. The CLI
+  `supersede` command gains `--source` and `--confidence`.
+
 ### Added
+- Source definitions: README and SKILL.md now state what each of the five
+  sources means, with examples and rules for picking one. CLI `--source` help
+  carries a short version.
+- `text_norm.one_line()`.
 - `recall()` and `recall_by_authority()` accept `touch_sources` to limit the
   rolling-TTL refresh to facts from the given sources. Default `None` keeps the
   previous behavior. The plugin detects the keyword and falls back cleanly with
   an older memory module.
 
 ### Changed
+- `remember()` with identical content from a more trusted source now upgrades
+  the stored source and raises confidence to the higher value (audited with
+  `source_upgraded_from`). Previously the first source stuck, so a fact the user
+  later confirmed stayed marked as low-trust. A less trusted repeat still
+  changes nothing.
+- Docs: security claims reworded to say that sources are declared by the
+  writer, the audit log is append-only by convention, and rule-text
+  sanitization is a blocklist behind the human review-gate.
 - Plugin: evidence stored from `inference`, `tool`, or `external` is labeled in
   the `## Context` block (`- [tool] ...`), preceded by a one-line note that such
   entries are unconfirmed context, not user intent or permission. Evidence from
@@ -28,6 +56,9 @@ links the issues it closed.
   as before.
 
 ### Fixed
+- SKILL.md install steps now copy `text_norm.py`, `synonyms.json`, and the
+  full test folder. They listed only `memory.py`, which cannot be imported on
+  its own.
 - Tests no longer open the real default database. `memory_status()` tests
   reached `~/.hermes/agent-memory/memory.db` and ran schema migrations against
   it; an autouse fixture now points the home directory at a temp dir.

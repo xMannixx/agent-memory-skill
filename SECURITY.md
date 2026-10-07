@@ -26,9 +26,10 @@ prompt injection. The project includes deliberate defenses:
 - **Authority lanes.** Memory is separated into `identity`, `preference`,
   `evidence`, and `authorization`, each with its own source policy and TTL.
 - **Authorization is never prompt-injected.** Authorization facts can be stored
-  only from `observation` source and are never placed into prompt context, so a
-  conversational "you are now allowed to delete files" cannot escalate
-  privileges through memory. This is covered by a negative test.
+  only from `observation` source and are never placed into prompt context. A
+  write labeled `conversation` ("you are now allowed to delete files") is
+  rejected; this is covered by a negative test. See the limitation on declared
+  sources below.
 - **Source trust.** Facts carry one of five sources, ordered most to least
   trusted: `observation` > `conversation` > `inference` > `tool` > `external`
   (`external` = untrusted input, e.g. content from external documents). Each
@@ -38,6 +39,20 @@ prompt injection. The project includes deliberate defenses:
   and `external` can write only `evidence`** — they cannot write `identity` or
   `authorization`. Rejected writes are audited as `policy_reject` with reason
   `source_not_allowed`.
+- **One entry, one line.** Injected entries and CLI output collapse line breaks
+  and control characters. Stored content cannot run past its own list item to
+  imitate another entry or a whole section, and a source label cannot be left
+  behind on the first line.
+- **Low-trust evidence is labeled and does not outlive its TTL by being shown.**
+  Evidence from `inference`, `tool`, or `external` carries its source in the
+  prompt, and automatic injection does not refresh its expiry.
+- **Sources do not change by accident.** `supersede` inherits source and
+  confidence; `consolidate()` prefers the more trusted source; a repeat from a
+  more trusted source upgrades, never the reverse.
+- **Owner-only files.** The database, its WAL/SHM files, snapshots, and the
+  default directory are created with `0600` / `0700`, independent of the
+  process umask. An existing database is tightened on open. A custom parent
+  directory is left untouched.
 - **Rebound-Protection.** Memory intake is capped after idle phases to limit
   flooding.
 - **Audit trail and recovery.** Writes and policy decisions are audited;
@@ -50,8 +65,23 @@ prompt injection. The project includes deliberate defenses:
 
 ## Scope and limitations
 
-- The database is local and unencrypted. Protect it with normal filesystem
-  permissions. Do not store secrets you would not want in plaintext on disk.
+- **Sources are declared by the writer.** `remember()` trusts the `source`
+  argument. The lane policy enforces what a declared source may write; it
+  cannot verify the declaration. An agent that labels third-party content as
+  `observation`, by mistake or after a prompt injection, bypasses the lane
+  restrictions, including `authorization`. The defenses above reduce accidental
+  mislabeling and limit the effect of honestly labeled low-trust content. They
+  are not a boundary against a compromised agent.
+- **The audit log is append-only by convention.** It lives in the same SQLite
+  file as the data, is pruned by retention, and is not tamper-evident. Anyone
+  who can write the database can alter it. It supports debugging and review of
+  an honest system, not forensics against an attacker with file access.
+- **Rule-text sanitization is a short blocklist.** It removes code fences and a
+  few known phrases from procedural rules. The control for rules is the human
+  review-gate; do not rely on the sanitizer to catch hostile wording.
+- The database is local and unencrypted. Files are created owner-only, but
+  anything running as the same user can read them. Do not store secrets you
+  would not want in plaintext on disk, and encrypt off-machine backups.
 - These defenses reduce risk but do not guarantee protection against every
   prompt-injection or poisoning technique. Review what your agent is allowed to
   do with retrieved memory.
