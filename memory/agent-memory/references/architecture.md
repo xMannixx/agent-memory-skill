@@ -147,6 +147,21 @@ Two rules keep a source from changing by accident:
   before it reads the stored source. Otherwise a writer holding a stale read
   could put a less trusted source back over a confirmation.
 
+### Consolidation and trust
+
+`consolidate()` groups active, tagged facts by lane and tag set. Expired facts
+are not candidates. The representative is the fact from the most trusted
+source, and its confidence rises by 0.05 only for each other member from an
+equally or more trusted source: shared tags say the facts are about the same
+subject, not that they agree.
+
+### Restating a superseded fact
+
+Facts are keyed by lane and content, so a superseded fact keeps its row. Storing
+the same content again clears `superseded_by` and takes the source and
+confidence of the new statement. In single-valued lanes a previously resolved
+conflict with a still-active fact is reopened.
+
 ### Lanes without rolling expiry
 
 `authorization` sets `rolling_ttl: False`. Reads record the access but do not

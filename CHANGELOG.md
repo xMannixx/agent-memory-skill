@@ -86,6 +86,19 @@ links the issues it closed.
   as before.
 
 ### Fixed
+- `consolidate()` only looks at active facts. `list_facts()` returned expired
+  facts, so an expired fact with higher confidence could become the
+  representative and supersede the live one, leaving nothing active.
+  `list_facts()` now leaves out expired facts unless `include_expired=True`;
+  CLI `list` gains `--include-expired` and marks such rows `[expired]`.
+- `consolidate()` raises confidence only for group members from an equally or
+  more trusted source. Same tags mean same subject, not agreement: four
+  contradicting `external` facts used to lift a user-sourced fact from 0.7 to
+  0.9.
+- Stating a superseded fact again makes it active again, with the source and
+  confidence of the new statement (audited as `revived`). It used to stay
+  hidden while `remember()` returned its id. A resolved conflict between two
+  facts is reopened when both are active again.
 - SKILL.md install steps now copy `text_norm.py`, `synonyms.json`, and the
   full test folder. They listed only `memory.py`, which cannot be imported on
   its own.
