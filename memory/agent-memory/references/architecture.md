@@ -154,6 +154,15 @@ Two rules keep a source from changing by accident:
   meantime, or put a less trusted source back over a confirmation. A failure
   rolls the whole operation back.
 
+  Two consequences. `consolidate()` holds the write lock while it reads every
+  active fact, groups them and retires the duplicates; with a very large store
+  other writers wait that long, and SQLite makes them give up after about five
+  seconds (`database is locked`, no automatic retry). Correctness is preferred
+  over throughput here. And the transaction is kept on the instance, so one
+  `AgentMemory` object must not be shared between threads; separate instances
+  or processes on the same file are the supported case. A rollback restores
+  stored data, not counters held on the instance.
+
 ### Consolidation and trust
 
 `consolidate()` groups active, tagged facts by lane and tag set. Expired facts
@@ -209,13 +218,18 @@ Problem: After >6h idle, baseline drifts down. On resume, a flood
 of incoming facts tries to re-anchor. Without a cap, the agent
 accepts all of them, polluting memory with stale or injected data.
 
-Solution: Session-level batch counter.
-- First write after >6h idle activates rebound mode.
-- Max 3 non-identity facts accepted in rebound mode.
+Solution: a rebound window with a shared counter.
+- The first write after >6h idle opens a 60-minute window
+  (`REBOUND_WINDOW_MINUTES`).
+- Max 3 new non-identity facts are accepted inside the window.
 - identity is exempt — the floor must never be gated.
-- Next session starts fresh (new counter).
+- After the window, intake is normal until the next idle gap.
 
-Scope: The counter lives in one `AgentMemory` instance, i.e. one process. Each CLI call is its own process, so through the CLI only the first write after the idle gap is counted and later calls are not capped. Treat it as a guard for a long-running process, not as a session quota.
+Scope: The window and its count are stored in the database (`rebound_until`, `rebound_count` in `memory_meta`) and checked under the write lock, so separate processes and CLI calls share one cap. Any write after the gap opens the window, including an identity fact or a snippet, so writing one of those first does not hide the gap. Storing a fact that already exists does not use up the cap.
+
+Earlier versions kept the counter on the `AgentMemory` instance. Since each CLI
+call is its own process, only the first write after a gap was ever counted
+there, and the cap did not hold for the way agents actually write.
 
 ## Timer as Compactor
 

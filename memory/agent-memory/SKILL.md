@@ -80,7 +80,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 260 passed
+# Expected: 270 passed
 ```
 
 ## Authority Lanes
@@ -127,13 +127,16 @@ injects only active, trigger-matching rules in a sanitized, budgeted
 `active-rules`, `approve-rule`, `reject-rule`, `retire-rule`, `rule-conflicts`.
 
 **Never run `approve-rule` or call `approve_rule()` yourself.** Approval belongs
-to the human operator. The gate is a status change, not an identity check: anything that can run `approve-rule` or call `approve_rule()` can approve. An agent must never approve its own rules; the host has to keep that command away from the agent or put a real confirmation in front of it.
+to the human operator. The CLI command only runs in an interactive terminal: it shows the rule and asks the person to type its id, and it refuses when called from a pipe or script. That stops a one-line self-approval; it is not an identity check. A caller with a pseudo-terminal, or code that calls `approve_rule()` directly, can still approve, so an agent must never approve its own rules and the host should keep both away from it.
 
 ## Rebound-Protection
 
-After >6h idle: max 3 new facts accepted per session (except identity).
+The first write after >6h idle opens a 60-minute window in which at most 3 new
+facts are accepted (identity is exempt). A `REJECTED` answer to `add` in that
+time means the cap was reached: store the fact again later, do not rephrase it
+to get around the cap.
 
-The counter lives in one `AgentMemory` instance, i.e. one process. Each CLI call is its own process, so through the CLI only the first write after the idle gap is counted and later calls are not capped. Treat it as a guard for a long-running process, not as a session quota.
+The window and its count are stored in the database (`rebound_until`, `rebound_count` in `memory_meta`) and checked under the write lock, so separate processes and CLI calls share one cap. Any write after the gap opens the window, including an identity fact or a snippet, so writing one of those first does not hide the gap. Storing a fact that already exists does not use up the cap.
 
 ## Sliding TTL
 
@@ -289,7 +292,7 @@ No manual loading required.
 ## Architecture Decisions
 
 - **Floor (identity)** never decays — idle periods must not lower the entry threshold.
-- **Rebound-Cap**: After >6h idle, max 3 new facts — prevents memory flooding. Identity is exempt.
+- **Rebound-Cap**: After >6h idle, max 3 new facts within a 60-minute window that is stored in the database and shared by all processes. Identity is exempt.
 - **Sliding TTL**: Read access refreshes non-identity expiry, so active facts survive cleanup. Automatic injection refreshes only user-sourced facts (`observation`, `conversation`).
 - **Recall snippets are separate**: raw conversation memory does not pollute semantic facts and is not auto-injected.
 - **Prompt budgets**: plugin context is clipped per lane to keep first-turn and later-turn prompts bounded.
