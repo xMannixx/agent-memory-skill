@@ -370,6 +370,57 @@ def test_recall_by_authority_touches_access_metadata(mem):
     assert access_count == 2
 
 
+def test_recall_by_authority_touch_sources_skips_other_sources(mem):
+    trusted = mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                           source="observation", confidence=1.0)
+    foreign = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                           source="external", confidence=1.0)
+
+    facts = mem.recall_by_authority(
+        "evidence", touch_sources=("observation", "conversation")
+    )
+    counts = {f.id: f.access_count
+              for f in mem.list_facts(authority_class="evidence")}
+
+    assert {f.id for f in facts} == {trusted, foreign}
+    assert counts[trusted] == 2
+    assert counts[foreign] == 1
+
+
+def test_recall_touch_sources_skips_other_sources(mem):
+    trusted = mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                           source="observation", confidence=1.0)
+    foreign = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                           source="external", confidence=1.0)
+
+    facts = mem.recall("deploy target",
+                       touch_sources=("observation", "conversation"))
+    counts = {f.id: f.access_count
+              for f in mem.list_facts(authority_class="evidence")}
+
+    assert {f.id for f in facts} == {trusted, foreign}
+    assert counts[trusted] == 2
+    assert counts[foreign] == 1
+
+
+def test_low_trust_fact_expires_when_reads_do_not_touch_it(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    user_sources = ("observation", "conversation")
+    trusted = frozen_mem.remember("Deploy target is prod-eu-1",
+                                  authority_class="evidence",
+                                  source="observation", confidence=1.0)
+    frozen_mem.remember("Deploy target is staging-7", authority_class="evidence",
+                        source="external", confidence=1.0)
+
+    for day in (20, 40):
+        frozen_mem.set_now(start + timedelta(days=day))
+        frozen_mem.recall_by_authority("evidence", touch_sources=user_sources)
+    frozen_mem.set_now(start + timedelta(days=61))
+    active = frozen_mem.recall_by_authority("evidence", touch_sources=user_sources)
+
+    assert [f.id for f in active] == [trusted]
+
+
 def test_forget_removes_fact_from_fts(mem):
     """FTS bleibt nach einem delete synchron und liefert keine orphaned Treffer."""
     fact_id = mem.remember(
@@ -1879,6 +1930,42 @@ def test_consolidate_merges_tagged_group_but_keeps_untagged(mem):
         "Router IP is 192.168.1.1",
         "Editor is Neovim",
     }
+
+
+def test_consolidate_prefers_trusted_source_over_higher_confidence(mem):
+    own = mem.remember("Deploy target is prod-eu-1", tags=["deploy", "target"],
+                       authority_class="evidence", source="observation",
+                       confidence=0.9)
+    foreign = mem.remember("Deploy target is staging-7", tags=["deploy", "target"],
+                           authority_class="evidence", source="external",
+                           confidence=1.0)
+
+    report = mem.consolidate()
+    active = mem.list_facts(authority_class="evidence")
+
+    assert report["facts_superseded"] == 1
+    assert [f.id for f in active] == [own]
+    assert active[0].source == "observation"
+    assert mem.get_fact(foreign).superseded_by == own
+
+
+@pytest.mark.parametrize("higher, lower", [
+    ("observation", "conversation"),
+    ("conversation", "inference"),
+    ("inference", "tool"),
+    ("tool", "external"),
+])
+def test_consolidate_follows_source_trust_order(mem, higher, lower):
+    kept = mem.remember("Value from the more trusted source", tags=["subject"],
+                        authority_class="evidence", source=higher,
+                        confidence=0.6)
+    mem.remember("Value from the less trusted source", tags=["subject"],
+                 authority_class="evidence", source=lower, confidence=1.0)
+
+    mem.consolidate()
+    active = mem.list_facts(authority_class="evidence")
+
+    assert [f.id for f in active] == [kept]
 
 
 def test_consolidate_preserves_superseded_for_inspection(mem):

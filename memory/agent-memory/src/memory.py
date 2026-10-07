@@ -16,7 +16,7 @@ import tempfile
 import time
 from types import MappingProxyType
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterable
 from pathlib import Path
 from dataclasses import dataclass, asdict
 
@@ -28,6 +28,11 @@ from text_norm import expand, query_terms
 # Source trust order (most to least trusted):
 # observation > conversation > inference > tool > external (untrusted)
 KNOWN_SOURCES = ("observation", "conversation", "inference", "tool", "external")
+
+# Higher rank = more trusted. Unknown sources rank below `external`.
+_SOURCE_TRUST_RANK = {
+    source: rank for rank, source in enumerate(reversed(KNOWN_SOURCES))
+}
 
 _AUTHORITY_POLICY = {
     "identity": {
@@ -879,6 +884,13 @@ class AgentMemory:
             """, (now, expires_at, fact_id))
 
 
+    def _touch_returned(self, conn, facts: List[Fact],
+                        touch_sources: Optional[Iterable[str]] = None):
+        if touch_sources is not None:
+            allowed = set(touch_sources)
+            facts = [fact for fact in facts if fact.source in allowed]
+        self._touch(conn, [fact.id for fact in facts])
+
     def _row_to_fact(self, row) -> Fact:
         return Fact(
             id=row[0], content=row[1],
@@ -1225,7 +1237,10 @@ class AgentMemory:
 
     def recall(self, query: str, limit: int = 10,
                tags: List[str] = None, min_confidence: float = 0.3,
-               authority_class: str = None) -> List[Fact]:
+               authority_class: str = None,
+               touch_sources: Optional[Iterable[str]] = None) -> List[Fact]:
+        """Full-text recall. Returned facts get their rolling TTL refreshed;
+        `touch_sources` limits that refresh to facts from the given sources."""
         started_at = time.perf_counter()
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -1263,7 +1278,7 @@ class AgentMemory:
                 facts.append(fact)
                 if len(facts) >= limit:
                     break
-            self._touch(conn, [fact.id for fact in facts])
+            self._touch_returned(conn, facts, touch_sources)
 
             conn.commit()
             return facts
@@ -1374,7 +1389,11 @@ class AgentMemory:
             "marked_resolved": marked_resolved,
         }
 
-    def recall_by_authority(self, authority_class: str, limit: int = 50) -> List[Fact]:
+    def recall_by_authority(self, authority_class: str, limit: int = 50,
+                            touch_sources: Optional[Iterable[str]] = None) -> List[Fact]:
+        """Most recently accessed facts of one lane. Returned facts get their
+        rolling TTL refreshed; `touch_sources` limits that refresh to facts
+        from the given sources."""
         started_at = time.perf_counter()
         conn, should_close = self._connect()
         cursor = conn.cursor()
@@ -1397,7 +1416,7 @@ class AgentMemory:
                 ) <= 0:
                     continue
                 facts.append(fact)
-            self._touch(conn, [fact.id for fact in facts])
+            self._touch_returned(conn, facts, touch_sources)
             conn.commit()
             return facts
         finally:
@@ -1461,6 +1480,10 @@ class AgentMemory:
 
         Untagged facts are never grouped: without tags there is no shared
         subject, and identical content already dedupes via content-hash IDs.
+
+        The representative is the fact from the most trusted source;
+        confidence only breaks ties within the same source, so a lower-trust
+        fact cannot displace a user-sourced one by declaring high confidence.
         """
         facts = self.list_facts(limit=100000)
         groups: Dict[tuple, List[Fact]] = {}
@@ -1484,7 +1507,10 @@ class AgentMemory:
             authority_class, tags = key
             ordered = sorted(
                 group,
-                key=lambda fact: (fact.confidence, fact.created_at, fact.id),
+                key=lambda fact: (
+                    _SOURCE_TRUST_RANK.get(fact.source, -1),
+                    fact.confidence, fact.created_at, fact.id,
+                ),
                 reverse=True,
             )
             representative = ordered[0]
