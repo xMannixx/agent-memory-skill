@@ -82,7 +82,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 148 passed
+# Expected: 177 passed
 ```
 
 ## Authority Lanes
@@ -226,6 +226,7 @@ Later turns:
 - no injection unless the hook provides a current user message
 - identity remains available as a small floor
 - relevant evidence is retrieved from the user message
+- evidence from `inference`, `tool`, or `external` is labeled (`- [tool] ...`) with a one-line note that it is unconfirmed context (first turn and later turns)
 - when entities are mentioned, direct relations are injected under `## Related` (1-hop, edge-only; opt-out via `AGENT_MEMORY_RELATIONS`; optional neighbor attributes via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS`, default disabled)
 - all lanes are clipped by per-lane budgets
 

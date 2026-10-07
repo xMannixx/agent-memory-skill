@@ -146,7 +146,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 170 passed
+# Expected: 177 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -295,6 +295,8 @@ On the first turn of a session it injects a compact baseline:
 - Last 3 negative lessons ("do not repeat these")
 
 On later turns it stays quiet unless the hook receives a current user message. If a message is available, it keeps the identity floor and retrieves query-relevant `evidence` facts via German-aware recall (token-prefix FTS + synonyms), then ranks candidates by a relevance score (stem/synonym overlap) without a binary cutoff. The only hard limit is the per-lane character budget.
+
+Evidence that did not come from the user is labeled in the prompt: facts stored from `inference`, `tool`, or `external` appear as `- [tool] ...` (and so on) under `## Context`, preceded by a one-line note that such entries are unconfirmed context, not user intent or permission. Facts from `observation` and `conversation` stay unlabeled, and the note is only added when a labeled entry is present.
 
 When a user message mentions known entities (by normalized term overlap with entity names), the plugin also injects their direct (1-hop) relations under a `## Related` section — relation edges only, never facts, so authorization content cannot leak through this path. Expansion is bounded (default: 6 lines / 1000 characters, at most 3 matched entities per turn). Disable with `AGENT_MEMORY_RELATIONS=0` (or `false` / `no` / `off`). Override the relations lane budget with `AGENT_MEMORY_BUDGET_RELATIONS`. Optionally append neighbor entity attributes to each relation line via `AGENT_MEMORY_BUDGET_ENTITY_ATTRS` (integer, default `0` = disabled): when set to N > 0, up to N `key=value` pairs per neighbor entity (sorted by key) are shown in brackets on that line, still clipped by the relations character budget.
 

@@ -7,6 +7,20 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 Versions map to the GitHub milestones in [ROADMAP.md](ROADMAP.md); each entry
 links the issues it closed.
 
+## [Unreleased]
+
+### Fixed
+- `consolidate()` no longer groups untagged facts. Previously every fact
+  without tags in a lane formed one group, so all but one were marked
+  superseded. Untagged facts are now left alone; tagged groups behave as before.
+
+### Changed
+- Plugin: evidence stored from `inference`, `tool`, or `external` is labeled in
+  the `## Context` block (`- [tool] ...`), preceded by a one-line note that such
+  entries are unconfirmed context, not user intent or permission. Evidence from
+  `observation` and `conversation` is unchanged, and the note is added only when
+  a labeled entry is present.
+
 ## [3.6.0] - 2026-06-02 - Procedural Lane
 
 ### Added
