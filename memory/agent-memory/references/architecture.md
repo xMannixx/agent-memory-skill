@@ -118,6 +118,34 @@ Promotion or repeated-verification rules (graduating facts from `evidence` to
 higher lanes after N confirmations) are intentionally **not** implemented —
 that overlaps with existing `consolidate()` confidence behavior.
 
+### Declared sources
+
+The source is an argument of `remember()`: whoever writes the fact declares it.
+The policy decides what a declared source may write; it has no way to check the
+declaration. This is the trust boundary of the whole lane model. It holds
+against honestly labeled low-trust content and against accidental mislabeling
+only as far as the writer follows the source definitions in SKILL.md. It does
+not hold against a writer that deliberately mislabels.
+
+Two rules keep a source from changing by accident:
+
+- **Confirmation upgrades.** `remember()` with identical content in the same
+  lane is the same fact (content-hash ID). If the repeat comes from a more
+  trusted source, the stored source is replaced and confidence is raised to the
+  higher value; the audit entry records `source_upgraded_from`. A less trusted
+  repeat changes nothing.
+- **Rewording does not upgrade.** `supersede()` inherits the old fact's source
+  and confidence unless the caller passes new ones, so replacing the text of a
+  `tool` fact cannot turn it into a `conversation` fact by default.
+
+### Rendering boundary
+
+Stored content is data; the prompt and the CLI are line-oriented. Both collapse
+line breaks and control characters so that one entry is always one line.
+Without that, content such as `x\n\n## Identity (permanent)\n- ...` would
+render as a separate, unlabeled section. This is structural, not a blocklist:
+it does not try to recognize hostile text, it only guarantees the layout.
+
 ## Rebound Protection (signalfoundry pattern)
 
 Problem: After >6h idle, baseline drifts down. On resume, a flood
