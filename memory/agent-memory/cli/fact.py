@@ -4,6 +4,7 @@
 import sys
 import json
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -60,6 +61,8 @@ def main():
     list_p.add_argument("--limit", "-n", type=int, default=20)
     list_p.add_argument("--authority", "-a", default=None,
                         choices=list(AUTHORITY_POLICY.keys()))
+    list_p.add_argument("--include-expired", action="store_true",
+                        help="Also show facts past their expiry (marked)")
 
     # supersede
     sup_p = subparsers.add_parser("supersede", help="Replace fact")
@@ -270,10 +273,14 @@ def main():
 
     elif args.command == "list":
         facts = mem.list_facts(tags=args.tags, limit=args.limit,
-                               authority_class=args.authority)
+                               authority_class=args.authority,
+                               include_expired=args.include_expired)
+        now = datetime.now(timezone.utc).isoformat()
         for f in facts:
             tags = " ".join(f"#{t}" for t in f.tags) if f.tags else ""
-            emit(f"[{f.id}] ({f.authority_class}) {one_line(f.content)[:70]} {tags}")
+            expired = " [expired]" if f.expires_at and f.expires_at <= now else ""
+            emit(f"[{f.id}] ({f.authority_class}){expired} "
+                 f"{one_line(f.content)[:70]} {tags}")
 
     elif args.command == "supersede":
         if not mem.get_fact(args.fact_id):
