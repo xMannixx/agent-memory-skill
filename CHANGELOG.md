@@ -28,6 +28,9 @@ links the issues it closed.
   as before.
 
 ### Fixed
+- Tests no longer open the real default database. `memory_status()` tests
+  reached `~/.hermes/agent-memory/memory.db` and ran schema migrations against
+  it; an autouse fixture now points the home directory at a temp dir.
 - `consolidate()` no longer groups untagged facts. Previously every fact
   without tags in a lane formed one group, so all but one were marked
   superseded. Untagged facts are now left alone; tagged groups behave as before.

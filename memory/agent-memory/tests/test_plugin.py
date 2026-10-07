@@ -414,6 +414,12 @@ def test_memory_status_available_shape():
     assert result["error"] is None
 
 
+def test_default_database_path_stays_inside_isolated_home(tmp_path):
+    result = memory_status()
+
+    assert tmp_path in Path(result["db_path"]).parents
+
+
 def test_plugin_injects_related_entities_on_query(mem):
     mem.track_entity("Alex", "person")
     mem.track_entity("Acme", "company")

@@ -82,7 +82,7 @@ systemctl --user enable --now hermes-memory-cleanup.timer
 ```bash
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 187 passed
+# Expected: 188 passed
 ```
 
 ## Authority Lanes
