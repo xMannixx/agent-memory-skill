@@ -290,6 +290,107 @@ def test_rebound_identity_always_passes(mem):
     assert result is not None  # Floor — immer erlaubt
 
 
+def _after_idle_gap(tmp_path):
+    """A database with one baseline fact, and a factory for fresh instances
+    seven hours later (each stands for a separate process or CLI call)."""
+    db_path = str(tmp_path / "rebound.db")
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    FrozenAgentMemory(db_path=db_path, frozen_now=start).remember(
+        "Baseline", authority_class="evidence", source="conversation",
+        confidence=0.9)
+
+    def instance(minutes_after_gap=0):
+        return FrozenAgentMemory(
+            db_path=db_path,
+            frozen_now=start + timedelta(hours=7, minutes=minutes_after_gap))
+
+    return instance
+
+
+def test_rebound_cap_holds_across_instances(tmp_path):
+    instance = _after_idle_gap(tmp_path)
+
+    accepted = [
+        instance().remember(f"Post-idle fact {index}", authority_class="evidence",
+                            source="external", confidence=0.6)
+        for index in range(6)
+    ]
+
+    assert [fact_id is not None for fact_id in accepted] == \
+        [True, True, True, False, False, False]
+    rejects = instance().get_audit(op="rebound_reject")
+    assert len(rejects) == 3
+
+
+def test_rebound_cap_holds_within_one_instance_that_meets_the_gap_later(tmp_path):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    mem = FrozenAgentMemory(db_path=str(tmp_path / "long.db"), frozen_now=start)
+    mem.remember("Baseline", authority_class="evidence", source="conversation",
+                 confidence=0.9)
+    mem.set_now(start + timedelta(hours=7))
+
+    accepted = [
+        mem.remember(f"Post-idle fact {index}", authority_class="evidence",
+                     source="conversation", confidence=0.9)
+        for index in range(5)
+    ]
+
+    assert sum(fact_id is not None for fact_id in accepted) == \
+        REBOUND_MAX_FACTS_AFTER_IDLE
+
+
+def test_rebound_window_ends_after_its_duration(tmp_path):
+    instance = _after_idle_gap(tmp_path)
+    for index in range(4):
+        instance().remember(f"Post-idle fact {index}", authority_class="evidence",
+                            source="external", confidence=0.6)
+
+    later = instance(minutes_after_gap=61).remember(
+        "After the window", authority_class="evidence", source="external",
+        confidence=0.6)
+
+    assert later is not None
+
+
+def test_identity_or_snippet_first_does_not_hide_the_idle_gap(tmp_path):
+    instance = _after_idle_gap(tmp_path)
+    assert instance().remember("Operator is Alex", authority_class="identity",
+                               source="observation", confidence=1.0)
+    instance().remember_snippet("Morning chatter", session_id="s1")
+
+    accepted = [
+        instance().remember(f"Post-idle fact {index}", authority_class="evidence",
+                            source="external", confidence=0.6)
+        for index in range(5)
+    ]
+
+    assert sum(fact_id is not None for fact_id in accepted) == \
+        REBOUND_MAX_FACTS_AFTER_IDLE
+
+
+def test_identity_is_exempt_and_uncounted_in_the_rebound_window(tmp_path):
+    instance = _after_idle_gap(tmp_path)
+    for index in range(4):
+        instance().remember(f"Post-idle fact {index}", authority_class="evidence",
+                            source="external", confidence=0.6)
+
+    assert instance().remember("Operator is Alex", authority_class="identity",
+                               source="observation", confidence=1.0)
+
+
+def test_stats_report_the_shared_rebound_window(tmp_path):
+    instance = _after_idle_gap(tmp_path)
+    assert instance().stats()["rebound_remaining"] == REBOUND_MAX_FACTS_AFTER_IDLE
+
+    instance().remember("Post-idle fact", authority_class="evidence",
+                        source="external", confidence=0.6)
+    stats = instance().stats()
+
+    assert stats["rebound_active"] is True
+    assert stats["rebound_remaining"] == REBOUND_MAX_FACTS_AFTER_IDLE - 1
+    assert instance(minutes_after_gap=61).stats()["rebound_active"] is False
+
+
 # ==================== TEST 5: forget_stale klassenspezifisch ====================
 
 def test_forget_stale_respects_classes(mem):

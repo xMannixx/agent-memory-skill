@@ -139,6 +139,9 @@ PROCEDURAL_RULE_STATES = (
 
 REBOUND_IDLE_THRESHOLD_HOURS = 6
 REBOUND_MAX_FACTS_AFTER_IDLE = 3
+# How long the cap stays in force once a write follows an idle gap. The window
+# is stored in the database, so it holds across processes and CLI calls.
+REBOUND_WINDOW_MINUTES = 60
 
 ANOMALY_WRITES_PER_MINUTE = 20
 ANOMALY_WINDOW_SECONDS = 60
@@ -328,6 +331,7 @@ class AgentMemory:
         self._rebound_write_count = 0
         self._session_start = self._utc_now()
         self._rebound_active = False
+        self._rebound_window_seen = False
         self._write_timestamps: List[datetime] = []
 
         # Shared connection for :memory: (Tests) — SQLite in-memory
@@ -373,6 +377,11 @@ class AgentMemory:
         and is committed once at the end, or rolled back together. Without
         this, a decision made on what was read can be overtaken by another
         writer before it is written. Nested use joins the outer transaction.
+
+        The transaction belongs to this instance: do not share one
+        AgentMemory between threads. Other writers wait for the lock (SQLite
+        gives up after about five seconds). A rollback restores what is
+        stored; counters kept on the instance are not rewound.
         """
         if self._txn_conn is not None:
             yield self._txn_conn
@@ -754,15 +763,61 @@ class AgentMemory:
                 self._rebound_active = True
 
     def _log_write(self):
-        conn, should_close = self._connect()
+        with self._write_transaction() as conn:
+            # Any write after an idle gap starts the rebound window. Otherwise
+            # an identity fact or a snippet written first would reset
+            # `last_write` and hide the gap from the cap.
+            self._rebound_window(conn, open_if_idle=True)
+            conn.execute("""
+                INSERT OR REPLACE INTO memory_meta (key, value)
+                VALUES ('last_write', ?)
+            """, (self._now(),))
+
+    def _rebound_window(self, conn, open_if_idle: bool) -> Optional[int]:
+        """Number of facts already counted in the active rebound window, or
+        None when no window is active.
+
+        The window is kept in `memory_meta` (`rebound_until`,
+        `rebound_count`), so every process sees the same count. With
+        `open_if_idle`, a window is opened when the last write is older than
+        the idle threshold. Call inside a write transaction.
+        """
         cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO memory_meta (key, value)
-            VALUES ('last_write', ?)
-        """, (self._now(),))
-        conn.commit()
-        if should_close:
-            conn.close()
+        cursor.execute(
+            "SELECT key, value FROM memory_meta WHERE key IN "
+            "('last_write', 'rebound_until', 'rebound_count')"
+        )
+        meta = dict(cursor.fetchall())
+        now = self._utc_now()
+
+        until = meta.get("rebound_until")
+        if until and now < self._parse_time(until):
+            self._rebound_active = True
+            self._rebound_window_seen = True
+            return int(meta.get("rebound_count") or 0)
+
+        last_write = meta.get("last_write")
+        idle = bool(last_write) and (
+            (now - self._parse_time(last_write)).total_seconds() / 3600
+            > REBOUND_IDLE_THRESHOLD_HOURS
+        )
+        # An instance that saw the gap when it started (or was flagged) opens
+        # the window even if another write has refreshed `last_write` since.
+        flagged = self._rebound_active and not self._rebound_window_seen
+        if not (idle or flagged):
+            self._rebound_active = False
+            return None
+        if not open_if_idle:
+            return None
+
+        until = (now + timedelta(minutes=REBOUND_WINDOW_MINUTES)).isoformat()
+        cursor.executemany(
+            "INSERT OR REPLACE INTO memory_meta (key, value) VALUES (?, ?)",
+            [("rebound_until", until), ("rebound_count", "0")]
+        )
+        self._rebound_active = True
+        self._rebound_window_seen = True
+        return 0
 
     def get_meta(self, key: str) -> Optional[str]:
         conn, should_close = self._connect()
@@ -1377,23 +1432,32 @@ class AgentMemory:
             self._log_write()
             return fact_id
 
-        # Rebound-Protection only for new facts (identity = Floor, always allowed)
-        if self._rebound_active and authority_class != "identity":
-            if self._rebound_write_count >= REBOUND_MAX_FACTS_AFTER_IDLE:
-                self._audit(
-                    "rebound_reject",
-                    content=content,
-                    authority_class=authority_class,
-                    source=source,
-                    accepted=False,
-                    reason="rebound_cap_exceeded",
-                    conn=conn,
+        # Rebound-Protection only for new facts (identity = Floor, always
+        # allowed). The count lives in the database, under the write lock
+        # held here, so separate processes share one cap.
+        if authority_class != "identity":
+            counted = self._rebound_window(conn, open_if_idle=True)
+            if counted is not None:
+                if counted >= REBOUND_MAX_FACTS_AFTER_IDLE:
+                    self._audit(
+                        "rebound_reject",
+                        content=content,
+                        authority_class=authority_class,
+                        source=source,
+                        accepted=False,
+                        reason="rebound_cap_exceeded",
+                        conn=conn,
+                    )
+                    conn.commit()
+                    if should_close:
+                        conn.close()
+                    return None
+                cursor.execute(
+                    "INSERT OR REPLACE INTO memory_meta (key, value) "
+                    "VALUES ('rebound_count', ?)",
+                    (str(counted + 1),)
                 )
-                conn.commit()
-                if should_close:
-                    conn.close()
-                return None
-            self._rebound_write_count += 1
+                self._rebound_write_count = counted + 1
 
         now = self._now()
         tags = tags or []
@@ -2516,6 +2580,8 @@ class AgentMemory:
         )
         open_conflicts = cursor.fetchone()[0]
 
+        rebound_counted = self._rebound_window(conn, open_if_idle=False)
+
         cursor.execute(
             "SELECT COUNT(*) FROM procedural_rules WHERE status = 'pending'"
         )
@@ -2576,12 +2642,13 @@ class AgentMemory:
             "superseded_ratio": superseded / total_facts if total_facts else 0.0,
             "recalls": self._recall_count,
             "recall_latency_ms": self._recall_latency_stats(),
-            "rebound_active": self._rebound_active,
+            "rebound_active": rebound_counted is not None or self._rebound_active,
             "session_writes": self._session_write_count,
-            "rebound_remaining": max(
-                0,
-                REBOUND_MAX_FACTS_AFTER_IDLE - self._rebound_write_count
-            ) if self._rebound_active else None,
+            "rebound_remaining": (
+                max(0, REBOUND_MAX_FACTS_AFTER_IDLE - rebound_counted)
+                if rebound_counted is not None
+                else (REBOUND_MAX_FACTS_AFTER_IDLE if self._rebound_active else None)
+            ),
         }
 
     # ==================== AUDIT / ANOMALY ====================
