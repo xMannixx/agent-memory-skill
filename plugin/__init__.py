@@ -160,10 +160,25 @@ def _budget_for(lane: str, budgets: Dict[str, Dict[str, int]]) -> Dict[str, int]
     return budget
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _one_line(text: Any) -> str:
+    """Collapse an entry to a single prompt line.
+
+    Every injected entry is one list item. Stored content with line breaks
+    would otherwise run past its own item and could imitate another entry or a
+    whole section (and leave the source label behind on its first line). Kept
+    local so the guarantee does not depend on the memory module's version.
+    """
+    return re.sub(r"\s+", " ", _CONTROL_CHARS.sub(" ", str(text))).strip()
+
+
 def _clip_to_budget(lines: Iterable[str], max_chars: int) -> List[str]:
     clipped = []
     used = 0
     for line in lines:
+        line = _one_line(line)
         next_used = used + len(line) + (1 if clipped else 0)
         if next_used > max_chars:
             break
