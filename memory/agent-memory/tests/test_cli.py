@@ -1,5 +1,6 @@
 """Tests for the fact.py command line."""
 
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,7 @@ def cli(tmp_path):
     db_path = str(tmp_path / "cli.db")
 
     def run(*args, check=True):
+        run.db_path = db_path
         result = subprocess.run(
             [sys.executable, str(CLI), "--db", db_path, *args],
             capture_output=True, text=True, check=check,
@@ -138,4 +140,15 @@ def test_cli_resolve_conflict_needs_an_open_conflict(cli):
 
     assert "SKIPPED" in out and victim in out
     assert "User's name is Alex" in cli("list", "--authority", "identity")
+
+
+def test_cli_list_hides_expired_facts_unless_asked(cli):
+    cli("add", "Stale note", "--authority", "evidence", "--source", "tool")
+    conn = sqlite3.connect(cli.db_path)
+    conn.execute("UPDATE facts SET expires_at = '2000-01-01T00:00:00+00:00'")
+    conn.commit()
+    conn.close()
+
+    assert cli("list") == ""
+    assert "(evidence) [expired] Stale note" in cli("list", "--include-expired")
 

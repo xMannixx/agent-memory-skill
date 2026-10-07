@@ -755,6 +755,105 @@ def test_remember_snippet_rejects_an_unknown_source(mem):
         mem.remember_snippet("hello", source="user-verified")
 
 
+def test_list_facts_leaves_out_expired_facts_by_default(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    frozen_mem.remember("Old preference", authority_class="preference",
+                        source="conversation", confidence=0.9)
+    frozen_mem.set_now(start + timedelta(days=30))
+    frozen_mem.remember("New preference", authority_class="preference",
+                        source="conversation", confidence=0.5)
+
+    active = frozen_mem.list_facts(authority_class="preference")
+    everything = frozen_mem.list_facts(authority_class="preference",
+                                       include_expired=True)
+
+    assert [f.content for f in active] == ["New preference"]
+    assert {f.content for f in everything} == {"New preference", "Old preference"}
+
+
+def test_consolidate_does_not_replace_a_live_fact_with_an_expired_one(frozen_mem):
+    start = datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc)
+    frozen_mem.remember("Old preference", tags=["style"],
+                        authority_class="preference", source="conversation",
+                        confidence=0.9)
+    frozen_mem.set_now(start + timedelta(days=30))
+    live = frozen_mem.remember("New preference", tags=["style"],
+                               authority_class="preference",
+                               source="conversation", confidence=0.5)
+
+    report = frozen_mem.consolidate()
+
+    assert report["groups_examined"] == 0
+    assert [f.id for f in frozen_mem.recall_by_authority("preference")] == [live]
+
+
+def test_consolidate_confidence_is_not_raised_by_less_trusted_facts(mem):
+    mem.remember("Deploy target is prod-eu-1", tags=["deploy"],
+                 authority_class="evidence", source="observation",
+                 confidence=0.7)
+    for index in range(4):
+        mem.remember(f"Deploy target is staging-{index}", tags=["deploy"],
+                     authority_class="evidence", source="external",
+                     confidence=1.0)
+
+    mem.consolidate()
+    survivor = mem.list_facts(authority_class="evidence")[0]
+
+    assert survivor.content == "Deploy target is prod-eu-1"
+    assert survivor.confidence == pytest.approx(0.7)
+
+
+def test_stating_a_superseded_fact_again_makes_it_active(mem):
+    old = mem.remember("Deploy target is staging-7", authority_class="evidence",
+                       source="observation", confidence=1.0)
+    replacement = mem.supersede(old, "Deploy target is staging-8")
+
+    again = mem.remember("Deploy target is staging-7",
+                         authority_class="evidence", source="tool",
+                         confidence=0.8)
+    active = {f.id: f for f in mem.list_facts(authority_class="evidence")}
+    update = [e for e in mem.get_provenance(old) if e["op"] == "update"][-1]
+
+    assert again == old
+    assert set(active) == {old, replacement}
+    assert active[old].source == "tool"
+    assert active[old].confidence == 0.8
+    assert update["metadata"] == {
+        "revived": True,
+        "was_superseded_by": replacement,
+        "previous_source": "observation",
+    }
+
+
+def test_supersede_back_to_an_earlier_statement_swaps_the_two(mem):
+    first = mem.remember("Deploy target is staging-7",
+                         authority_class="evidence", source="observation",
+                         confidence=1.0)
+    second = mem.supersede(first, "Deploy target is staging-8")
+
+    back = mem.supersede(second, "Deploy target is staging-7")
+
+    assert back == first
+    assert [f.id for f in mem.list_facts(authority_class="evidence")] == [first]
+
+
+def test_reviving_a_dropped_identity_fact_reopens_the_conflict(mem):
+    keep = mem.remember("Username is alpha", tags=["username"],
+                        authority_class="identity", source="observation",
+                        confidence=1.0)
+    drop = mem.remember("Username is beta", tags=["username"],
+                        authority_class="identity", source="observation",
+                        confidence=1.0)
+    mem.resolve_conflict(keep, [drop])
+    assert mem.get_conflicts() == []
+
+    mem.remember("Username is beta", tags=["username"],
+                 authority_class="identity", source="observation",
+                 confidence=1.0)
+
+    assert mem.stats()["open_conflicts"] == 1
+
+
 def test_forget_removes_fact_from_fts(mem):
     """FTS bleibt nach einem delete synchron und liefert keine orphaned Treffer."""
     fact_id = mem.remember(

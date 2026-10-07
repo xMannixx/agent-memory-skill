@@ -1142,6 +1142,14 @@ class AgentMemory:
                 conflict_id, authority_class, json.dumps(sorted_tags),
                 fact_id, other_id, self._now()
             ))
+            if cursor.rowcount == 0:
+                # The pair was in conflict before and got resolved; both facts
+                # being active again reopens it.
+                cursor.execute(
+                    "UPDATE fact_conflicts SET resolved = 0, detected_at = ? "
+                    "WHERE id = ? AND resolved = 1",
+                    (self._now(), conflict_id)
+                )
             self._audit(
                 "conflict_detected",
                 fact_id=fact_id,
@@ -1238,24 +1246,51 @@ class AgentMemory:
         # writer, or a stale read can overwrite a newer, more trusted source.
         if not conn.in_transaction:
             cursor.execute("BEGIN IMMEDIATE")
-        cursor.execute("SELECT source FROM facts WHERE id = ?", (fact_id,))
+        cursor.execute(
+            "SELECT source, superseded_by, tags FROM facts WHERE id = ?",
+            (fact_id,)
+        )
         existing = cursor.fetchone()
         exists = existing is not None
 
         if exists:
             self._touch(conn, [fact_id], renew=True)
-            # Same content from a more trusted source confirms the fact: adopt
-            # that source. A less trusted repeat never downgrades it.
-            stored_source = existing[0]
-            upgraded = (
-                _SOURCE_TRUST_RANK.get(source, -1)
-                > _SOURCE_TRUST_RANK.get(stored_source, -1)
-            )
-            if upgraded:
+            stored_source, superseded_by, stored_tags = existing
+            if superseded_by is not None:
+                # Stating a superseded fact again makes it current again. It
+                # used to stay hidden while the call reported success. The row
+                # takes the source and confidence of this statement, not the
+                # ones it had before it was replaced.
                 cursor.execute(
-                    "UPDATE facts SET source = ?, confidence = MAX(confidence, ?) "
-                    "WHERE id = ?",
+                    "UPDATE facts SET superseded_by = NULL, source = ?, "
+                    "confidence = ? WHERE id = ?",
                     (source, confidence, fact_id)
+                )
+                metadata = {
+                    "revived": True,
+                    "was_superseded_by": superseded_by,
+                    "previous_source": stored_source,
+                }
+                if policy.get("single_valued"):
+                    self._detect_conflicts(
+                        conn, fact_id, authority_class,
+                        json.loads(stored_tags or "[]")
+                    )
+            else:
+                # Same content from a more trusted source confirms the fact:
+                # adopt that source. A less trusted repeat never downgrades it.
+                upgraded = (
+                    _SOURCE_TRUST_RANK.get(source, -1)
+                    > _SOURCE_TRUST_RANK.get(stored_source, -1)
+                )
+                if upgraded:
+                    cursor.execute(
+                        "UPDATE facts SET source = ?, "
+                        "confidence = MAX(confidence, ?) WHERE id = ?",
+                        (source, confidence, fact_id)
+                    )
+                metadata = (
+                    {"source_upgraded_from": stored_source} if upgraded else None
                 )
             self._audit(
                 "update",
@@ -1263,9 +1298,7 @@ class AgentMemory:
                 content=content,
                 authority_class=authority_class,
                 source=source,
-                metadata=(
-                    {"source_upgraded_from": stored_source} if upgraded else None
-                ),
+                metadata=metadata,
                 conn=conn,
             )
             conn.commit()
@@ -1574,7 +1607,10 @@ class AgentMemory:
 
     def list_facts(self, tags: List[str] = None, limit: int = 50,
                    authority_class: str = None,
-                   include_superseded: bool = False) -> List[Fact]:
+                   include_superseded: bool = False,
+                   include_expired: bool = False) -> List[Fact]:
+        """Lists facts, newest first, without recording an access. Expired and
+        superseded facts are left out unless asked for."""
         conn, should_close = self._connect()
         cursor = conn.cursor()
 
@@ -1583,6 +1619,9 @@ class AgentMemory:
 
         if not include_superseded:
             sql += " AND superseded_by IS NULL"
+        if not include_expired:
+            sql += " AND (expires_at IS NULL OR expires_at > ?)"
+            params.append(self._now())
         if authority_class:
             sql += " AND authority_class = ?"
             params.append(authority_class)
@@ -1643,9 +1682,17 @@ class AgentMemory:
             )
             representative = ordered[0]
             old_ids = [fact.id for fact in ordered]
+            # Only equally or more trusted facts add confidence. Same tags mean
+            # same subject, not agreement: lower-trust facts in the group may
+            # contradict the representative and must not strengthen it.
+            representative_rank = _SOURCE_TRUST_RANK.get(representative.source, -1)
+            supporting = sum(
+                1 for fact in ordered[1:]
+                if _SOURCE_TRUST_RANK.get(fact.source, -1) >= representative_rank
+            )
             consolidated_confidence = min(
                 1.0,
-                representative.confidence + 0.05 * (len(group) - 1)
+                representative.confidence + 0.05 * supporting
             )
             group_report = {
                 "authority_class": authority_class,
