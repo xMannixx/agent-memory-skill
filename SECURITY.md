@@ -67,8 +67,14 @@ prompt injection. The project includes deliberate defenses:
   directory is left untouched. If the mode cannot be enforced (foreign owner,
   filesystem without POSIX modes) a `RuntimeWarning` names the file; with
   `AGENT_MEMORY_STRICT_PERMISSIONS=1` opening fails instead.
-- **Rebound-Protection.** Memory intake is capped after idle phases within one
-  process. See the limitation below for CLI use.
+- **Rebound-Protection.** After an idle gap of more than six hours, at most
+  three new non-identity facts are accepted for 60 minutes. The window and its
+  count are stored in the database and checked under the write lock, so the cap
+  holds across processes and CLI calls, and an identity fact or snippet written
+  first does not hide the gap.
+- **Rule approval needs an interactive terminal.** The CLI `approve-rule`
+  command refuses to run from a pipe or script, shows the rule, and requires
+  the rule id to be typed.
 - **Audit trail and recovery.** Writes and policy decisions are audited;
   snapshots allow rollback, and rapid-change write patterns are flagged by
   anomaly detection. Audit history is retention-bounded.
@@ -90,15 +96,16 @@ prompt injection. The project includes deliberate defenses:
   file as the data, is pruned by retention, and is not tamper-evident. Anyone
   who can write the database can alter it. It supports debugging and review of
   an honest system, not forensics against an attacker with file access.
-- **The human review-gate is a status change, not an identity check.**
-  `approve_rule()` cannot tell who is calling. An agent with access to the CLI
-  or the Python API can approve its own proposal. The host must keep
-  `approve-rule` away from the agent or require a real confirmation; the skill
-  tells the agent not to use it, which is an instruction, not a control.
-- **Rebound-Protection counts per process.** The counter is held in one
-  `AgentMemory` instance. Separate CLI calls are separate processes, so only the
-  first write after an idle gap is counted there. It does not cap flooding
-  through repeated CLI calls.
+- **The human review-gate is not an identity check.** The CLI makes a
+  one-line self-approval impossible, but it cannot tell who is typing: an agent
+  that controls a pseudo-terminal can answer the prompt, and `approve_rule()`
+  in the Python API has no such check at all. The host must keep both away
+  from the agent or require a real confirmation; the skill tells the agent not
+  to approve its own rules, which is an instruction, not a control.
+- **Rebound-Protection limits volume, not content.** It caps how many new
+  facts arrive after a gap; it does not judge them, and an agent that can
+  write the database directly can reset the window. Facts rejected by the cap
+  are not queued: they have to be stored again later.
 - **Rule-text sanitization is a short blocklist.** It removes code fences and a
   few known phrases from procedural rules. The control for rules is the human
   review-gate; do not rely on the sanitizer to catch hostile wording.

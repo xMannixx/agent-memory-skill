@@ -10,6 +10,17 @@ links the issues it closed.
 ## [Unreleased]
 
 ### Security
+- Rebound-Protection now holds across processes. The counter lived on the
+  `AgentMemory` instance, so with one process per CLI call only the first write
+  after an idle gap was counted: after a 7-hour gap six `add` calls stored six
+  facts. The window (`REBOUND_WINDOW_MINUTES`, 60) and its count are stored in
+  `memory_meta` and checked under the write lock. Any write after the gap opens
+  the window, so an identity fact or a snippet written first no longer hides
+  the gap.
+- CLI `approve-rule` only runs in an interactive terminal. It shows the rule
+  and requires the rule id to be typed; called from a pipe or script it exits
+  with status 2. An agent could approve its own proposal with one command.
+  `approve_rule()` in the Python API is unchanged.
 - `supersede()`, `consolidate()` and `resolve_conflict()` run their read, check
   and write in one write transaction that inner calls join. Each decided on a
   read taken before the lock: a fact confirmed as `observation` in between was
@@ -75,6 +86,10 @@ links the issues it closed.
   an older memory module.
 
 ### Changed
+- A gap is detected at write time, not only when an instance is created: a
+  long-lived instance that sits idle for six hours is capped on its next
+  writes as well. `stats()` reports the shared window in `rebound_active` and
+  `rebound_remaining`.
 - `consolidate()` no longer raises confidence. The representative keeps its
   own value. The 0.05 bonus per group member counted contradictions as support
   and, with restating, could be replayed until confidence reached 1.0.

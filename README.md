@@ -29,7 +29,7 @@ This skill adds a structured memory layer on top of Hermes and OpenClaw with:
 
 - **Authority Lanes** — 5 classes with separate TTL, confidence thresholds, and source policies
 - **Recall snippets** — raw conversation recall stored separately from distilled semantic facts
-- **Rebound-Protection** — caps memory intake after idle phases within one process (see the scope note below)
+- **Rebound-Protection** — caps memory intake for an hour after an idle phase, shared across processes and CLI calls
 - **Smart plugin injection** — first-turn baseline plus query-aware evidence retrieval on later turns
 - **Token budgeting** — per-lane context limits with explicit no-injection policy for authorization facts
 - **German-aware retrieval** — token-prefix FTS5 + synonym map, with fold/stem relevance scoring (deterministic, no embeddings)
@@ -95,7 +95,7 @@ lifecycle than facts. Rules live in their own `procedural_rules` table (not in
   creates a `pending` rule. Only `source="observation"` is accepted; the agent
   can surface candidates but cannot inject free-form self-instructions.
 - **Review-gate (mandatory)** — `approve_rule(rule_id)` is the only path to
-  active. There is no auto-approval, regardless of confidence. The gate is a status change, not an identity check: anything that can run `approve-rule` or call `approve_rule()` can approve. An agent must never approve its own rules; the host has to keep that command away from the agent or put a real confirmation in front of it.
+  active. There is no auto-approval, regardless of confidence. The CLI command only runs in an interactive terminal: it shows the rule and asks the person to type its id, and it refuses when called from a pipe or script. That stops a one-line self-approval; it is not an identity check. A caller with a pseudo-terminal, or code that calls `approve_rule()` directly, can still approve, so an agent must never approve its own rules and the host should keep both away from it.
 - **Conflict detection (deterministic, stdlib-only)** — on approval, a candidate
   is compared to active rules via trigger-overlap and a structured effect
   vector. **Direct contradictions** (opposite values on the same effect axis)
@@ -117,13 +117,13 @@ lifecycle than facts. Rules live in their own `procedural_rules` table (not in
 
 **The problem:** After being offline for hours, the memory baseline drifts down. On resume, a flood of incoming facts tries to re-anchor — and without a cap, the agent accepts all of them, polluting memory with stale or injected data.
 
-**The fix:** A session-level batch counter.
-- First write after >6h idle activates rebound mode
-- Max 3 non-identity facts accepted per session in rebound mode
+**The fix:** A rebound window with a shared counter.
+- The first write after >6h idle opens a 60-minute window
+- At most 3 new non-identity facts are accepted inside the window; further ones are rejected and audited as `rebound_reject`
 - `identity` is always exempt — the floor must never be gated
-- Next session starts fresh
+- After the window, intake is normal again until the next idle gap
 
-**Scope:** The counter lives in one `AgentMemory` instance, i.e. one process. Each CLI call is its own process, so through the CLI only the first write after the idle gap is counted and later calls are not capped. Treat it as a guard for a long-running process, not as a session quota.
+**Scope:** The window and its count are stored in the database (`rebound_until`, `rebound_count` in `memory_meta`) and checked under the write lock, so separate processes and CLI calls share one cap. Any write after the gap opens the window, including an identity fact or a snippet, so writing one of those first does not hide the gap. Storing a fact that already exists does not use up the cap.
 
 Credit: signalfoundry on Moltbook #memory
 
@@ -169,7 +169,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 260 passed
+# Expected: 270 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -287,7 +287,7 @@ python3 $CLI propose-rule --domain response_style \
   --trigger '{"scope":"always"}' --effect '{"length":"short"}' \
   --behavior "Keep responses concise."
 python3 $CLI pending-rules
-python3 $CLI approve-rule <rule_id> --by alex        # add --ack-interactions to override soft blocks
+python3 $CLI approve-rule <rule_id> --by alex        # interactive: shows the rule, asks you to type its id; add --ack-interactions to override soft blocks
 python3 $CLI active-rules
 python3 $CLI rule-conflicts
 python3 $CLI reject-rule <rule_id> "too broad"
