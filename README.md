@@ -146,7 +146,7 @@ cp plugin/__init__.py plugin/plugin.yaml $HERMES/plugins/agent-memory-plugin/
 # 5. Run tests to verify
 cd ~/.hermes/agent-memory
 python3 -m pytest tests -v
-# Expected: 187 passed
+# Expected: 188 passed
 ```
 
 ### Via Hermes Skills Hub
@@ -338,6 +338,7 @@ agent-memory-skill/
 │       ├── cli/
 │       │   └── fact.py                       # CLI tool
 │       ├── tests/
+│       │   ├── conftest.py                   # Isolates tests from the real ~/.hermes
 │       │   ├── test_memory.py                # Core memory tests
 │       │   ├── test_text_norm.py             # Normalization tests
 │       │   ├── test_plugin.py                # Plugin retrieval/budget tests
