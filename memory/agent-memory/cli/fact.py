@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from memory import AgentMemory, AUTHORITY_POLICY, KNOWN_SOURCES
-from text_norm import one_line
+from text_norm import one_line, strip_control
 
 SOURCE_HELP = (
     "Where the content comes from: observation = the user stated it explicitly; "
@@ -16,6 +16,17 @@ SOURCE_HELP = (
     "inference = your own conclusion or suggestion; tool = tool or command "
     "output; external = third-party content (web, documents, other people)."
 )
+
+
+def emit(text: object = "", **kwargs) -> None:
+    """Print one line. Every line this CLI writes goes through here.
+
+    Output is read line by line, by people and by agents. Tags, session names,
+    relation names and reasons are stored text just like fact content; any of
+    them containing a line break could otherwise add a line that looks like
+    another record or a status message.
+    """
+    print(strip_control(text), **kwargs)
 
 
 def main():
@@ -54,8 +65,10 @@ def main():
     sup_p = subparsers.add_parser("supersede", help="Replace fact")
     sup_p.add_argument("fact_id")
     sup_p.add_argument("new_content")
-    sup_p.add_argument("--authority", "-a", default="evidence",
-                       choices=list(AUTHORITY_POLICY.keys()))
+    sup_p.add_argument("--authority", "-a", default=None,
+                       choices=list(AUTHORITY_POLICY.keys()),
+                       help="Must match the replaced fact's lane "
+                            "(default: inherit)")
     sup_p.add_argument("--source", "-s", default=None,
                        choices=list(KNOWN_SOURCES),
                        help="Source of the new content (default: inherit from "
@@ -167,7 +180,8 @@ def main():
 
     snippet_add_p = snippet_sub.add_parser("add", help="Save snippet")
     snippet_add_p.add_argument("content", help="Raw snippet")
-    snippet_add_p.add_argument("--source", "-s", default="conversation")
+    snippet_add_p.add_argument("--source", "-s", default="conversation",
+                               choices=list(KNOWN_SOURCES), help=SOURCE_HELP)
     snippet_add_p.add_argument("--session", help="Optional session ID")
 
     snippet_search_p = snippet_sub.add_parser("search", help="Search snippets")
@@ -241,68 +255,69 @@ def main():
             expires_in_days=args.expires
         )
         if fact_id:
-            print(f"OK [{fact_id}] ({args.authority}): {one_line(args.content)[:60]}")
+            emit(f"OK [{fact_id}] ({args.authority}): {one_line(args.content)[:60]}")
         else:
-            print(f"REJECTED — Authority policy or rebound protection took effect")
+            emit(f"REJECTED — Authority policy or rebound protection took effect")
 
     elif args.command == "recall":
         facts = mem.recall(args.query, limit=args.limit, tags=args.tags,
                            authority_class=args.authority)
         if not facts:
-            print("No matches.")
+            emit("No matches.")
         for f in facts:
             tags = " ".join(f"#{t}" for t in f.tags) if f.tags else ""
-            print(f"[{f.id}] ({f.authority_class}/{f.source} conf={f.confidence}) {one_line(f.content)} {tags}")
+            emit(f"[{f.id}] ({f.authority_class}/{f.source} conf={f.confidence}) {one_line(f.content)} {tags}")
 
     elif args.command == "list":
         facts = mem.list_facts(tags=args.tags, limit=args.limit,
                                authority_class=args.authority)
         for f in facts:
             tags = " ".join(f"#{t}" for t in f.tags) if f.tags else ""
-            print(f"[{f.id}] ({f.authority_class}) {one_line(f.content)[:70]} {tags}")
+            emit(f"[{f.id}] ({f.authority_class}) {one_line(f.content)[:70]} {tags}")
 
     elif args.command == "supersede":
         if not mem.get_fact(args.fact_id):
-            print(f"ERROR — fact_id '{args.fact_id}' not found; nothing superseded.", file=sys.stderr)
+            emit(f"ERROR — fact_id '{args.fact_id}' not found; nothing superseded.", file=sys.stderr)
             sys.exit(1)
         overrides = {}
+        if args.authority is not None:
+            overrides["authority_class"] = args.authority
         if args.source is not None:
             overrides["source"] = args.source
         if args.confidence is not None:
             overrides["confidence"] = args.confidence
-        new_id = mem.supersede(args.fact_id, args.new_content,
-                               authority_class=args.authority, **overrides)
+        new_id = mem.supersede(args.fact_id, args.new_content, **overrides)
         if new_id:
-            print(f"OK [{new_id}] replaces {args.fact_id}")
+            emit(f"OK [{new_id}] replaces {args.fact_id}")
         else:
-            print(f"ERROR — Replacement was rejected by policy")
+            emit(f"ERROR — Replacement was rejected by policy")
 
     elif args.command == "forget-stale":
         result = mem.forget_stale()
         total = sum(result.values())
-        print(f"Deleted: {total} facts")
+        emit(f"Deleted: {total} facts")
         for cls, count in result.items():
-            print(f"  {cls}: {count}")
+            emit(f"  {cls}: {count}")
 
     elif args.command == "stats":
         s = mem.stats()
-        print(f"Active facts:     {s['active_facts']}")
-        print(f"Superseded:       {s['superseded_facts']}")
-        print(f"Lessons:          {s['lessons']}")
-        print(f"Entities:         {s['entities']}")
-        print(f"Relations:        {s['relations']}")
-        print(f"Open Conflicts:   {s['open_conflicts']}")
-        print(f"Pending rules:    {s['pending_rules']}")
-        print(f"Active rules:     {s['active_rules']}")
-        print(f"Open rule confl.: {s['open_rule_conflicts']}")
-        print(f"Audit rows:       {s['audit_rows']}")
-        print(f"Rebound active:   {s['rebound_active']}")
-        print(f"Rebound remaining: {s['rebound_remaining']}")
-        print(f"Session writes:   {s['session_writes']}")
-        print(f"Recalls:          {s['recalls']}")
+        emit(f"Active facts:     {s['active_facts']}")
+        emit(f"Superseded:       {s['superseded_facts']}")
+        emit(f"Lessons:          {s['lessons']}")
+        emit(f"Entities:         {s['entities']}")
+        emit(f"Relations:        {s['relations']}")
+        emit(f"Open Conflicts:   {s['open_conflicts']}")
+        emit(f"Pending rules:    {s['pending_rules']}")
+        emit(f"Active rules:     {s['active_rules']}")
+        emit(f"Open rule confl.: {s['open_rule_conflicts']}")
+        emit(f"Audit rows:       {s['audit_rows']}")
+        emit(f"Rebound active:   {s['rebound_active']}")
+        emit(f"Rebound remaining: {s['rebound_remaining']}")
+        emit(f"Session writes:   {s['session_writes']}")
+        emit(f"Recalls:          {s['recalls']}")
         latency = s.get("recall_latency_ms", {})
         if latency.get("count"):
-            print(
+            emit(
                 "Recall latency:   "
                 f"avg={latency['avg']:.2f}ms "
                 f"p50={latency['p50']:.2f}ms "
@@ -310,16 +325,16 @@ def main():
                 f"max={latency['max']:.2f}ms"
             )
         else:
-            print("Recall latency:   no data")
-        print(
+            emit("Recall latency:   no data")
+        emit(
             f"Stale facts:      {s['stale_facts']} "
             f"({s['stale_ratio']:.1%})"
         )
-        print(f"Superseded ratio: {s['superseded_ratio']:.1%}")
-        print(f"By class:")
+        emit(f"Superseded ratio: {s['superseded_ratio']:.1%}")
+        emit(f"By class:")
         for cls, count in s.get("by_class", {}).items():
             ratio = s.get("by_class_ratio", {}).get(cls, 0.0)
-            print(f"  {cls}: {count} ({ratio:.1%})")
+            emit(f"  {cls}: {count} ({ratio:.1%})")
 
     elif args.command == "relate":
         relation_id = mem.relate(
@@ -329,7 +344,7 @@ def main():
             from_type=args.from_type,
             to_type=args.to_type,
         )
-        print(
+        emit(
             f"OK [{relation_id}] "
             f"{args.from_name} --{args.predicate}--> {args.to_name}"
         )
@@ -341,10 +356,10 @@ def main():
             predicate=args.predicate,
         )
         if not relations:
-            print("No relations found.")
+            emit("No relations found.")
         for rel in relations:
             attrs = f" {rel['attributes']}" if rel["attributes"] else ""
-            print(one_line(
+            emit(one_line(
                 f"[{rel['id']}] "
                 f"{rel['from_name']} ({rel['from_type']}) "
                 f"--{rel['predicate']}--> "
@@ -354,107 +369,112 @@ def main():
     elif args.command == "conflicts":
         conflicts = mem.get_conflicts(include_resolved=args.all)
         if not conflicts:
-            print("No conflicts found.")
+            emit("No conflicts found.")
         for conflict in conflicts:
             status = "resolved" if conflict["resolved"] else "open"
             tags = ",".join(conflict["tags"]) or "-"
             a = conflict["fact_a"]
             b = conflict["fact_b"]
-            print(
+            emit(
                 f"[{conflict['id']}] {status} "
                 f"{conflict['lane']} tags={tags}"
             )
-            print(f"  A [{a['id']}]: {one_line(a['content'])}")
-            print(f"  B [{b['id']}]: {one_line(b['content'])}")
+            emit(f"  A [{a['id']}]: {one_line(a['content'])}")
+            emit(f"  B [{b['id']}]: {one_line(b['content'])}")
 
     elif args.command == "resolve-conflict":
         result = mem.resolve_conflict(args.keep_id, args.drop_ids)
-        print(
+        emit(
             f"OK kept {result['kept']}; "
-            f"dropped {', '.join(result['dropped'])}; "
+            f"dropped {', '.join(result['dropped']) or '-'}; "
             f"resolved {result['marked_resolved']} conflict(s)"
         )
+        if result["skipped"]:
+            emit(
+                "SKIPPED — no open conflict with the kept fact: "
+                f"{', '.join(result['skipped'])}"
+            )
 
     elif args.command == "learn":
         lid = mem.learn(args.action, args.context, args.outcome, args.insight)
-        print(f"OK [{lid}] Lesson saved")
+        emit(f"OK [{lid}] Lesson saved")
 
     elif args.command == "lessons":
         lessons = mem.get_lessons(context=args.context, outcome=args.outcome,
                                   limit=args.limit)
         if not lessons:
-            print("No lessons found.")
+            emit("No lessons found.")
         for l in lessons:
-            print(one_line(f"[{l.id}] [{l.outcome}] {l.action} → {l.insight}"))
+            emit(one_line(f"[{l.id}] [{l.outcome}] {l.action} → {l.insight}"))
 
     elif args.command == "audit":
         entries = mem.get_audit(limit=args.limit, op=args.op)
         if not entries:
-            print("No audit entries.")
+            emit("No audit entries.")
         for e in entries:
             flag = "OK " if e["accepted"] else "REJ"
             reason = f" reason={e['reason']}" if e["reason"] else ""
             fid = f" fact={e['fact_id']}" if e["fact_id"] else ""
             cls = f" {e['authority_class']}" if e["authority_class"] else ""
-            print(f"[{e['ts']}] {flag} {e['op']}{cls}{fid}{reason}")
+            emit(f"[{e['ts']}] {flag} {e['op']}{cls}{fid}{reason}")
 
     elif args.command == "provenance":
         entries = mem.get_provenance(args.fact_id)
         if not entries:
-            print(f"No provenance for {args.fact_id}")
+            emit(f"No provenance for {args.fact_id}")
         for e in entries:
-            print(
+            emit(
                 f"{e['ts']}  {e['op']}  "
                 f"source={e['source']}  reason={e['reason']}"
             )
 
     elif args.command == "audit-prune":
         removed = mem.forget_old_audit(days=args.days)
-        print(f"Pruned {removed} audit rows")
+        emit(f"Pruned {removed} audit rows")
 
     elif args.command == "snapshot":
         path = mem.snapshot(label=args.label)
-        print(f"OK Snapshot: {path}")
+        emit(f"OK Snapshot: {path}")
 
     elif args.command == "snapshots":
         snaps = mem.list_snapshots()
         if not snaps:
-            print("No snapshots available.")
+            emit("No snapshots available.")
         for s in snaps:
             kb = s["size_bytes"] / 1024
-            print(f"[{s['created_at']}] {s['path']} ({kb:.1f} KB)")
+            emit(f"[{s['created_at']}] {s['path']} ({kb:.1f} KB)")
 
     elif args.command == "restore":
         mem.restore(args.path)
-        print(f"OK Restored from: {args.path}")
+        emit(f"OK Restored from: {args.path}")
 
     elif args.command == "anomalies":
         anomalies = mem.anomalies(limit=args.limit)
         if not anomalies:
-            print("No anomalies.")
+            emit("No anomalies.")
         for a in anomalies:
             meta = a.get("metadata") or {}
-            print(f"[{a['ts']}] {a['reason']} count={meta.get('count')}")
+            emit(f"[{a['ts']}] {a['reason']} count={meta.get('count')}")
 
     elif args.command == "consolidate":
         report = mem.consolidate(dry_run=args.dry_run)
         mode = "DRY RUN" if report["dry_run"] else "APPLIED"
-        print(f"Consolidation:    {mode}")
-        print(f"Groups examined:  {report['groups_examined']}")
-        print(f"Consolidated:     {report['facts_consolidated']}")
-        print(f"Superseded:       {report['facts_superseded']}")
+        emit(f"Consolidation:    {mode}")
+        emit(f"Groups examined:  {report['groups_examined']}")
+        emit(f"Consolidated:     {report['facts_consolidated']}")
+        emit(f"Superseded:       {report['facts_superseded']}")
         for group in report["groups"]:
             tags = ",".join(group["tags"]) or "-"
             new_id = group["new_id"] or "(dry-run)"
-            print(
+            emit(
                 f"  {group['authority_class']} tags={tags}: "
                 f"{len(group['old_ids'])} -> {new_id} "
                 f"conf={group['confidence']:.2f}"
             )
 
     elif args.command == "doctor":
-        print(f"Memory src path:  {Path(__file__).parent.parent / 'src'}")
-        print(f"DB path:          {mem.db_path}")
+        emit(f"Memory src path:  {Path(__file__).parent.parent / 'src'}")
+        emit(f"DB path:          {mem.db_path}")
 
         _doctor_conn, _doctor_should_close = mem._connect()
         try:
@@ -466,32 +486,32 @@ def main():
             _tables_present = {row[0] for row in _cur.fetchall()}
             for _tbl in ("facts", "recall_snippets"):
                 _status = "present" if _tbl in _tables_present else "missing"
-                print(f"Table {_tbl!r}: {_status}")
+                emit(f"Table {_tbl!r}: {_status}")
 
             s = mem.stats()
-            print(f"Active facts:     {s['active_facts']}")
-            print(f"Lessons:          {s['lessons']}")
+            emit(f"Active facts:     {s['active_facts']}")
+            emit(f"Lessons:          {s['lessons']}")
 
             if "recall_snippets" in _tables_present:
                 _cur.execute("SELECT COUNT(*) FROM recall_snippets")
                 _snippet_count = _cur.fetchone()[0]
             else:
                 _snippet_count = 0
-            print(f"Snippets:         {_snippet_count}")
+            emit(f"Snippets:         {_snippet_count}")
         finally:
             if _doctor_should_close:
                 _doctor_conn.close()
 
         plugin_path = Path(__file__).parents[3] / "plugin" / "__init__.py"
         plugin_status = "present" if plugin_path.exists() else "missing"
-        print(f"Plugin file:      {plugin_path} ({plugin_status})")
+        emit(f"Plugin file:      {plugin_path} ({plugin_status})")
 
     elif args.command == "propose-rule":
         try:
             trigger = json.loads(args.trigger)
             effect = json.loads(args.effect)
         except json.JSONDecodeError as exc:
-            print(f"ERROR — invalid JSON in --trigger/--effect: {exc}")
+            emit(f"ERROR — invalid JSON in --trigger/--effect: {exc}")
             return
         rule_id = mem.propose_rule(
             args.domain, trigger, effect, args.behavior,
@@ -504,16 +524,16 @@ def main():
             previous_rule_id=args.previous_rule_id,
         )
         if rule_id:
-            print(f"OK [{rule_id}] pending review: {args.behavior[:60]}")
+            emit(f"OK [{rule_id}] pending review: {args.behavior[:60]}")
         else:
-            print("REJECTED — observation-only source or confidence policy")
+            emit("REJECTED — observation-only source or confidence policy")
 
     elif args.command == "pending-rules":
         rules = mem.get_pending_rules()
         if not rules:
-            print("No pending rules.")
+            emit("No pending rules.")
         for r in rules:
-            print(one_line(
+            emit(one_line(
                 f"[{r.id}] ({r.domain}, prio={r.priority}, "
                 f"cost={r.artifact_cost}) {r.behavior_text}"
             ))
@@ -521,10 +541,10 @@ def main():
     elif args.command == "active-rules":
         rules = mem.get_active_rules(domain=args.domain)
         if not rules:
-            print("No active rules.")
+            emit("No active rules.")
         for r in rules:
             expires = f" expires={r.expires_at[:10]}" if r.expires_at else ""
-            print(one_line(
+            emit(one_line(
                 f"[{r.id}] ({r.domain}, prio={r.priority}){expires} "
                 f"{r.behavior_text}"
             ))
@@ -539,44 +559,44 @@ def main():
             note = ""
             if result.get("interactions") or result.get("budget"):
                 note = " (interactions/budget acknowledged)"
-            print(f"OK approved [{result['rule_id']}]{note}")
+            emit(f"OK approved [{result['rule_id']}]{note}")
         elif result["reason"] == "contradiction":
-            print("BLOCKED — direct contradiction (cannot be overridden):")
+            emit("BLOCKED — direct contradiction (cannot be overridden):")
             for c in result["conflicts"]:
-                print(f"  vs {c['other_id']} on {c['dimension']}: {c['reason']}")
+                emit(f"  vs {c['other_id']} on {c['dimension']}: {c['reason']}")
         elif result["reason"] == "needs_ack":
-            print("BLOCKED — needs --ack-interactions:")
+            emit("BLOCKED — needs --ack-interactions:")
             for c in result.get("interactions", []):
-                print(f"  {c['conflict_type']} vs {c['other_id']}: {c['reason']}")
+                emit(f"  {c['conflict_type']} vs {c['other_id']}: {c['reason']}")
             for b in result.get("budget", []):
-                print(f"  budget: {b}")
+                emit(f"  budget: {b}")
         else:
-            print(f"NOT APPROVED — {result['reason']}")
+            emit(f"NOT APPROVED — {result['reason']}")
 
     elif args.command == "reject-rule":
         if mem.reject_rule(args.rule_id, args.reason):
-            print(f"OK rejected [{args.rule_id}]")
+            emit(f"OK rejected [{args.rule_id}]")
         else:
-            print(f"ERROR — {args.rule_id} not found or not pending")
+            emit(f"ERROR — {args.rule_id} not found or not pending")
 
     elif args.command == "retire-rule":
         if mem.retire_rule(args.rule_id):
-            print(f"OK retired [{args.rule_id}]")
+            emit(f"OK retired [{args.rule_id}]")
         else:
-            print(f"ERROR — {args.rule_id} not found or not active")
+            emit(f"ERROR — {args.rule_id} not found or not active")
 
     elif args.command == "rule-conflicts":
         conflicts = mem.get_rule_conflicts(include_resolved=args.all)
         if not conflicts:
-            print("No rule conflicts.")
+            emit("No rule conflicts.")
         for c in conflicts:
             status = "resolved" if c["resolved"] else "open"
             dim = f" dim={c['dimension']}" if c["dimension"] else ""
-            print(
+            emit(
                 f"[{c['id']}] {status} {c['conflict_type']}{dim} "
                 f"{c['rule_a']} <-> {c['rule_b']}"
             )
-            print(f"  {c['reason']}")
+            emit(f"  {c['reason']}")
 
     elif args.command == "snippet":
         if args.snippet_command == "add":
@@ -585,7 +605,7 @@ def main():
                 source=args.source,
                 session_id=args.session,
             )
-            print(f"OK [{snippet_id}] Snippet saved")
+            emit(f"OK [{snippet_id}] Snippet saved")
         elif args.snippet_command == "search":
             snippets = mem.search_snippets(
                 args.query,
@@ -593,10 +613,10 @@ def main():
                 session_id=args.session,
             )
             if not snippets:
-                print("No snippets found.")
+                emit("No snippets found.")
             for snippet in snippets:
                 session = f" session={snippet.session_id}" if snippet.session_id else ""
-                print(
+                emit(
                     f"[{snippet.id}] ({snippet.source}{session}) "
                     f"{one_line(snippet.content)[:100]}"
                 )

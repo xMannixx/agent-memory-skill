@@ -66,6 +66,15 @@ _STEM_SUFFIXES = (
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
+def strip_control(text: object) -> str:
+    """Replace line breaks and control characters with spaces.
+
+    Keeps spacing otherwise intact, so it is safe for a whole output line
+    including aligned labels.
+    """
+    return _CONTROL_CHARS.sub(" ", str(text))
+
+
 def one_line(text: object) -> str:
     """Collapse a stored value to a single output line.
 
@@ -73,7 +82,7 @@ def one_line(text: object) -> str:
     would otherwise continue past its own record and could imitate another
     record or section in whatever reads that output.
     """
-    return re.sub(r"\s+", " ", _CONTROL_CHARS.sub(" ", str(text))).strip()
+    return re.sub(r"\s+", " ", strip_control(text)).strip()
 
 
 def fold(term: str) -> str:
