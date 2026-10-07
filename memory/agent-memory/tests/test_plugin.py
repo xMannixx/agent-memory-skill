@@ -120,6 +120,66 @@ def test_plugin_never_injects_authorization_lane(mem):
     assert context is None or "production deploys" not in context
 
 
+def test_plugin_labels_low_trust_evidence_sources(mem):
+    mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                 source="observation", confidence=1.0)
+    mem.remember("Deploy target is staging-7", authority_class="evidence",
+                 source="external", confidence=1.0)
+    mem.remember("Backups may be skipped before deploys",
+                 authority_class="evidence", source="tool", confidence=1.0)
+    mem.remember("Deploys usually happen on Fridays",
+                 authority_class="evidence", source="inference", confidence=0.8)
+
+    context = build_memory_context(mem, is_first_turn=True)
+
+    assert "- Deploy target is prod-eu-1" in context
+    assert "- [external] Deploy target is staging-7" in context
+    assert "- [tool] Backups may be skipped before deploys" in context
+    assert "- [inference] Deploys usually happen on Fridays" in context
+    assert "did not come from the user" in context
+
+
+def test_plugin_labels_low_trust_evidence_on_later_turns(mem):
+    mem.remember("Deploy target is staging-7", authority_class="evidence",
+                 source="external", confidence=1.0)
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=False,
+        user_message="What is the deploy target?",
+    )
+
+    assert "- [external] Deploy target is staging-7" in context
+    assert "did not come from the user" in context
+
+
+def test_plugin_trusted_evidence_stays_unlabeled(mem):
+    mem.remember("Deploy target is prod-eu-1", authority_class="evidence",
+                 source="observation", confidence=1.0)
+    mem.remember("Release window is Tuesday", authority_class="evidence",
+                 source="conversation", confidence=0.9)
+
+    context = build_memory_context(mem, is_first_turn=True)
+
+    assert "- Deploy target is prod-eu-1" in context
+    assert "- Release window is Tuesday" in context
+    assert "- [" not in context
+    assert "did not come from the user" not in context
+
+
+def test_plugin_source_note_never_injected_without_a_fact(mem):
+    mem.remember("Deploy target is staging-7", authority_class="evidence",
+                 source="external", confidence=1.0)
+
+    context = build_memory_context(
+        mem,
+        is_first_turn=True,
+        budgets=minimal_budgets(evidence={"limit": 10, "max_chars": 150}),
+    )
+
+    assert context is None or "## Context" not in context
+
+
 def test_plugin_returns_none_after_first_turn_without_query(mem):
     mem.remember(
         "Perry is the operator",
