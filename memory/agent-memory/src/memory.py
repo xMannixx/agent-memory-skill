@@ -8,12 +8,14 @@ from the Moltbook signalfoundry/lucy17 discussions.
 MIT License
 """
 
+import os
 import sqlite3
 import json
 import hashlib
 import re
 import tempfile
 import time
+import warnings
 from types import MappingProxyType
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Iterable
@@ -68,6 +70,9 @@ _AUTHORITY_POLICY = {
         "min_confidence": 0.9,
         "allowed_sources": ("observation",),  # NOT from conversation
         "single_valued": True,
+        # A permission expires 90 days after it was last stated. Reading it
+        # does not extend it; only remember() does.
+        "rolling_ttl": False,
     },
     "procedural": {
         "ttl_days": 30,
@@ -144,14 +149,39 @@ AUDIT_RETENTION_DAYS = 90
 STATS_LATENCY_WINDOW = 200
 
 
+STRICT_PERMISSIONS_ENV = "AGENT_MEMORY_STRICT_PERMISSIONS"
+
+
 def _owner_only(path: Path, mode: int) -> None:
-    """Best-effort chmod. Memory files hold conversation content in plaintext,
-    so they should not depend on the process umask to stay private."""
+    """Restrict a memory file or directory to its owner.
+
+    Memory files hold conversation content in plaintext, so they must not
+    depend on the process umask. If the mode cannot be tightened (foreign
+    owner, filesystem without POSIX modes) this warns instead of carrying on
+    silently; with AGENT_MEMORY_STRICT_PERMISSIONS=1 it refuses to continue.
+    """
+    if os.name == "nt":
+        return
     try:
-        if path.stat().st_mode & 0o7777 != mode:
-            path.chmod(mode)
+        current = path.stat().st_mode & 0o7777
+    except OSError:
+        return  # nothing there yet, e.g. no WAL file
+    if current == mode:
+        return
+    try:
+        path.chmod(mode)
+        current = path.stat().st_mode & 0o7777
     except OSError:
         pass
+    if current & 0o077:
+        message = (
+            f"agent-memory: {path} is accessible by group/others "
+            f"(mode {current:04o}) and could not be restricted to {mode:04o}"
+        )
+        strict = os.environ.get(STRICT_PERMISSIONS_ENV, "").strip().lower()
+        if strict in {"1", "true", "yes", "on"}:
+            raise PermissionError(message)
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
 
 
 @dataclass
@@ -294,10 +324,7 @@ class AgentMemory:
     @staticmethod
     def _create_private_file(path: Path) -> None:
         if not path.exists():
-            try:
-                path.touch(mode=0o600)
-            except OSError:
-                pass
+            path.touch(mode=0o600)
         _owner_only(path, 0o600)
 
     def _connect(self):
@@ -880,7 +907,10 @@ class AgentMemory:
     def _expires_at_for_days(self, days: int) -> str:
         return (self._utc_now() + timedelta(days=days)).isoformat()
 
-    def _touch(self, conn, fact_ids: List[str]):
+    def _touch(self, conn, fact_ids: List[str], renew: bool = False):
+        """Record an access. Extends the expiry of rolling-TTL lanes; lanes
+        with `rolling_ttl: False` are only extended when `renew` is set, i.e.
+        when the fact is stated again."""
         if not fact_ids:
             return
 
@@ -896,6 +926,14 @@ class AgentMemory:
                 continue
 
             policy = AUTHORITY_POLICY.get(row[0], AUTHORITY_POLICY["evidence"])
+            if not renew and not policy.get("rolling_ttl", True):
+                cursor.execute("""
+                    UPDATE facts
+                    SET last_accessed = ?,
+                        access_count = access_count + 1
+                    WHERE id = ?
+                """, (now, fact_id))
+                continue
             expires_at = self._expires_at_for_policy(policy)
             # Rolling TTL: expires_at is reset to NOW + policy TTL on every read
             # access. Facts in active use never expire; facts that are never read
@@ -1151,7 +1189,19 @@ class AgentMemory:
             )
             return None
 
-        policy = AUTHORITY_POLICY.get(authority_class, AUTHORITY_POLICY["evidence"])
+        policy = AUTHORITY_POLICY.get(authority_class)
+        if policy is None:
+            # An unknown lane used to be stored under the evidence policy, so
+            # a look-alike name ("Authorization") was accepted from any source.
+            self._audit(
+                "policy_reject",
+                content=content,
+                authority_class=authority_class,
+                source=source,
+                accepted=False,
+                reason="unknown_authority_class",
+            )
+            return None
 
         # Source-Validierung
         if source not in policy["allowed_sources"]:
@@ -1183,12 +1233,17 @@ class AgentMemory:
 
         conn, should_close = self._connect()
         cursor = conn.cursor()
+        # Take the write lock before reading. The read-compare-write below
+        # (source upgrade, insert-if-absent) must not interleave with another
+        # writer, or a stale read can overwrite a newer, more trusted source.
+        if not conn.in_transaction:
+            cursor.execute("BEGIN IMMEDIATE")
         cursor.execute("SELECT source FROM facts WHERE id = ?", (fact_id,))
         existing = cursor.fetchone()
         exists = existing is not None
 
         if exists:
-            self._touch(conn, [fact_id])
+            self._touch(conn, [fact_id], renew=True)
             # Same content from a more trusted source confirms the fact: adopt
             # that source. A less trusted repeat never downgrades it.
             stored_source = existing[0]
@@ -1394,8 +1449,30 @@ class AgentMemory:
         cursor = conn.cursor()
         marked_resolved = 0
         dropped = []
+        skipped = []
 
         for drop_id in drop_ids:
+            # Only an open, recorded conflict between exactly these two facts
+            # may be resolved; otherwise any fact could switch off any other.
+            cursor.execute("""
+                SELECT 1 FROM fact_conflicts
+                WHERE resolved = 0
+                AND (
+                    (fact_a = ? AND fact_b = ?)
+                    OR (fact_a = ? AND fact_b = ?)
+                )
+            """, (keep_id, drop_id, drop_id, keep_id))
+            if cursor.fetchone() is None:
+                skipped.append(drop_id)
+                self._audit(
+                    "conflict_resolve_rejected",
+                    fact_id=keep_id,
+                    accepted=False,
+                    reason="no_open_conflict",
+                    metadata={"keep_id": keep_id, "drop_id": drop_id},
+                    conn=conn,
+                )
+                continue
             cursor.execute(
                 "UPDATE facts SET superseded_by = ? WHERE id = ?",
                 (keep_id, drop_id)
@@ -1430,6 +1507,7 @@ class AgentMemory:
         return {
             "kept": keep_id,
             "dropped": dropped,
+            "skipped": skipped,
             "marked_resolved": marked_resolved,
         }
 
@@ -1477,13 +1555,19 @@ class AgentMemory:
         )
         row = cursor.fetchone()
         if row:
-            self._touch(conn, [fact_id])
-            cursor.execute(
-                f"SELECT {self._fact_select_columns()} FROM facts WHERE id = ?",
-                (fact_id,)
+            fact = self._row_to_fact(row)
+            active = fact.superseded_by is None and (
+                fact.expires_at is None or fact.expires_at > self._now()
             )
-            row = cursor.fetchone()
-            conn.commit()
+            # Looking at an expired or superseded fact must not bring it back.
+            if active:
+                self._touch(conn, [fact_id])
+                cursor.execute(
+                    f"SELECT {self._fact_select_columns()} FROM facts WHERE id = ?",
+                    (fact_id,)
+                )
+                row = cursor.fetchone()
+                conn.commit()
         if should_close:
             conn.close()
         return self._row_to_fact(row) if row else None
@@ -1629,15 +1713,38 @@ class AgentMemory:
         conn, should_close = self._connect()
         try:
             row = conn.execute(
-                "SELECT source, confidence FROM facts WHERE id = ?",
+                "SELECT source, confidence, authority_class FROM facts "
+                "WHERE id = ?",
                 (old_fact_id,)
             ).fetchone()
         finally:
             if should_close:
                 conn.close()
         if row:
-            kwargs.setdefault("source", row[0])
-            kwargs.setdefault("confidence", row[1])
+            old_source, old_confidence, old_lane = row
+            source = kwargs.setdefault("source", old_source)
+            kwargs.setdefault("confidence", old_confidence)
+            lane = kwargs.setdefault("authority_class", old_lane)
+            # A replacement may not take a fact out of its lane or put a less
+            # trusted source in its place; otherwise a low-trust write could
+            # switch off an identity or authorization fact.
+            reason = None
+            if lane != old_lane:
+                reason = "supersede_lane_change"
+            elif (_SOURCE_TRUST_RANK.get(source, -1)
+                  < _SOURCE_TRUST_RANK.get(old_source, -1)):
+                reason = "supersede_source_downgrade"
+            if reason:
+                self._audit(
+                    "policy_reject",
+                    fact_id=old_fact_id,
+                    content=new_content,
+                    authority_class=lane,
+                    source=source,
+                    accepted=False,
+                    reason=reason,
+                )
+                return None
 
         new_id = self.remember(new_content, **kwargs)
         if not new_id:
@@ -1744,6 +1851,10 @@ class AgentMemory:
         Snippets are not automatically injected; they are only retrievable
         via search_snippets().
         """
+        if source not in KNOWN_SOURCES:
+            raise ValueError(
+                f"unknown source {source!r}; expected one of {KNOWN_SOURCES}"
+            )
         metadata = metadata or {}
         snippet_id = self._generate_id(
             f"{session_id or ''}:{content}",
