@@ -9,10 +9,11 @@ links the issues it closed.
 
 ## [Unreleased]
 
-### Fixed
-- `consolidate()` no longer groups untagged facts. Previously every fact
-  without tags in a lane formed one group, so all but one were marked
-  superseded. Untagged facts are now left alone; tagged groups behave as before.
+### Added
+- `recall()` and `recall_by_authority()` accept `touch_sources` to limit the
+  rolling-TTL refresh to facts from the given sources. Default `None` keeps the
+  previous behavior. The plugin detects the keyword and falls back cleanly with
+  an older memory module.
 
 ### Changed
 - Plugin: evidence stored from `inference`, `tool`, or `external` is labeled in
@@ -20,6 +21,21 @@ links the issues it closed.
   entries are unconfirmed context, not user intent or permission. Evidence from
   `observation` and `conversation` is unchanged, and the note is added only when
   a labeled entry is present.
+- Plugin: automatic injection no longer refreshes the rolling TTL of evidence
+  from `inference`, `tool`, or `external`. Such facts used to stay alive
+  indefinitely just by being injected each session; they now expire on the lane
+  TTL unless re-observed or recalled explicitly. User-sourced facts are refreshed
+  as before.
+
+### Fixed
+- `consolidate()` no longer groups untagged facts. Previously every fact
+  without tags in a lane formed one group, so all but one were marked
+  superseded. Untagged facts are now left alone; tagged groups behave as before.
+- `consolidate()` picks the representative by source trust first
+  (`observation` > `conversation` > `inference` > `tool` > `external`);
+  confidence only breaks ties within the same source. Previously the highest
+  self-declared confidence won, so a `tool` or `external` fact could displace a
+  user-sourced fact with the same tags.
 
 ## [3.6.0] - 2026-06-02 - Procedural Lane
 
