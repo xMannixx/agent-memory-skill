@@ -24,6 +24,8 @@ links the issues it closed.
   passes new ones. Previously the replacement defaulted to `conversation` at
   confidence 1.0, so rewording a `tool` or `external` fact upgraded it. The CLI
   `supersede` command gains `--source` and `--confidence`.
+- CI: the workflow token is limited to `contents: read` (GitHub code-scanning
+  alert `actions/missing-workflow-permissions`).
 
 ### Added
 - Source definitions: README and SKILL.md now state what each of the five
