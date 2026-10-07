@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Iterable
 from pathlib import Path
 from dataclasses import dataclass, asdict
+from contextlib import contextmanager, nullcontext
 
 from text_norm import expand, query_terms
 
@@ -150,6 +151,34 @@ STATS_LATENCY_WINDOW = 200
 
 
 STRICT_PERMISSIONS_ENV = "AGENT_MEMORY_STRICT_PERMISSIONS"
+
+# Facts that count as present: not replaced and not past their expiry.
+# Takes one parameter, the current time.
+_ACTIVE_FACT_IDS = (
+    "SELECT id FROM facts WHERE superseded_by IS NULL "
+    "AND (expires_at IS NULL OR expires_at > ?)"
+)
+
+
+class _JoinedConnection:
+    """The connection handed out inside `_write_transaction()`.
+
+    Code that normally opens its own connection, commits and closes gets this
+    instead, so its statements join the surrounding transaction. Committing
+    and closing stay with whoever opened the transaction.
+    """
+
+    def __init__(self, conn):
+        self._conn = conn
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
 
 
 def _owner_only(path: Path, mode: int) -> None:
@@ -292,6 +321,7 @@ class AgentMemory:
             db_path = str(db_dir / "memory.db")
 
         self.db_path = db_path
+        self._txn_conn = None
         self._session_write_count = 0
         self._recall_count = 0
         self._recall_latency_ms: List[float] = []
@@ -329,9 +359,40 @@ class AgentMemory:
 
     def _connect(self):
         """Returns (conn, should_close)."""
+        if self._txn_conn is not None:
+            return self._txn_conn, False
         if self._shared_conn is not None:
             return self._shared_conn, False
         return sqlite3.connect(self.db_path), True
+
+    @contextmanager
+    def _write_transaction(self):
+        """Hold the write lock across a read-check-write sequence.
+
+        Everything this instance does inside the block runs on one connection
+        and is committed once at the end, or rolled back together. Without
+        this, a decision made on what was read can be overtaken by another
+        writer before it is written. Nested use joins the outer transaction.
+        """
+        if self._txn_conn is not None:
+            yield self._txn_conn
+            return
+        conn, should_close = self._connect()
+        try:
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            self._txn_conn = _JoinedConnection(conn)
+            try:
+                yield self._txn_conn
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            finally:
+                self._txn_conn = None
+        finally:
+            if should_close:
+                conn.close()
 
     def _init_db(self):
         conn, should_close = self._connect()
@@ -1161,14 +1222,16 @@ class AgentMemory:
     def _reconcile_conflicts(self, conn) -> int:
         """Mark conflicts resolved when either referenced fact is no longer active."""
         cursor = conn.cursor()
+        now = self._now()
         cursor.execute(
-            """
+            f"""
             UPDATE fact_conflicts SET resolved = 1
             WHERE resolved = 0 AND (
-                fact_a NOT IN (SELECT id FROM facts WHERE superseded_by IS NULL)
-                OR fact_b NOT IN (SELECT id FROM facts WHERE superseded_by IS NULL)
+                fact_a NOT IN ({_ACTIVE_FACT_IDS})
+                OR fact_b NOT IN ({_ACTIVE_FACT_IDS})
             )
-            """
+            """,
+            (now, now)
         )
         return cursor.rowcount
 
@@ -1247,42 +1310,48 @@ class AgentMemory:
         if not conn.in_transaction:
             cursor.execute("BEGIN IMMEDIATE")
         cursor.execute(
-            "SELECT source, superseded_by, tags FROM facts WHERE id = ?",
+            "SELECT source, superseded_by, tags, expires_at FROM facts "
+            "WHERE id = ?",
             (fact_id,)
         )
         existing = cursor.fetchone()
         exists = existing is not None
 
         if exists:
-            self._touch(conn, [fact_id], renew=True)
-            stored_source, superseded_by, stored_tags = existing
-            if superseded_by is not None:
-                # Stating a superseded fact again makes it current again. It
-                # used to stay hidden while the call reported success. The row
-                # takes the source and confidence of this statement, not the
-                # ones it had before it was replaced.
+            stored_source, superseded_by, stored_tags, expires_at = existing
+            expired = expires_at is not None and expires_at <= self._now()
+            new_rank = _SOURCE_TRUST_RANK.get(source, -1)
+            stored_rank = _SOURCE_TRUST_RANK.get(stored_source, -1)
+            if superseded_by is not None or expired:
+                # A fact that was replaced or has expired is no longer
+                # current. Stating it again brings it back as a statement of
+                # this source, with this confidence: where it once came from
+                # says nothing about who vouches for it now.
                 cursor.execute(
                     "UPDATE facts SET superseded_by = NULL, source = ?, "
                     "confidence = ? WHERE id = ?",
                     (source, confidence, fact_id)
                 )
-                metadata = {
-                    "revived": True,
-                    "was_superseded_by": superseded_by,
-                    "previous_source": stored_source,
-                }
+                self._touch(conn, [fact_id], renew=True)
+                metadata = {"revived": True, "previous_source": stored_source}
+                if superseded_by is not None:
+                    metadata["was_superseded_by"] = superseded_by
+                if expired:
+                    metadata["was_expired"] = True
                 if policy.get("single_valued"):
                     self._detect_conflicts(
                         conn, fact_id, authority_class,
                         json.loads(stored_tags or "[]")
                     )
+            elif new_rank < stored_rank:
+                # A less trusted repeat changes nothing: it does not downgrade
+                # the fact and does not extend its life either.
+                metadata = {"ignored": "less_trusted_repeat"}
             else:
-                # Same content from a more trusted source confirms the fact:
-                # adopt that source. A less trusted repeat never downgrades it.
-                upgraded = (
-                    _SOURCE_TRUST_RANK.get(source, -1)
-                    > _SOURCE_TRUST_RANK.get(stored_source, -1)
-                )
+                # Same content from an equally or more trusted source renews
+                # the fact; a more trusted one also becomes its source.
+                self._touch(conn, [fact_id], renew=True)
+                upgraded = new_rank > stored_rank
                 if upgraded:
                     cursor.execute(
                         "UPDATE facts SET source = ?, "
@@ -1428,11 +1497,17 @@ class AgentMemory:
             FROM fact_conflicts
             WHERE 1=1
         """
+        params = []
         if not include_resolved:
-            sql += " AND resolved = 0"
+            # A conflict is only open while both facts are still present.
+            sql += (
+                f" AND resolved = 0 AND fact_a IN ({_ACTIVE_FACT_IDS})"
+                f" AND fact_b IN ({_ACTIVE_FACT_IDS})"
+            )
+            params = [self._now(), self._now()]
         sql += " ORDER BY detected_at DESC, id DESC"
 
-        cursor.execute(sql)
+        cursor.execute(sql, params)
         rows = cursor.fetchall()
 
         fact_ids = sorted({row[3] for row in rows} | {row[4] for row in rows})
@@ -1478,64 +1553,77 @@ class AgentMemory:
 
     def resolve_conflict(self, keep_id: str,
                          drop_ids: List[str]) -> Dict[str, Any]:
-        conn, should_close = self._connect()
-        cursor = conn.cursor()
+        """Resolves open conflicts by keeping one fact and retiring the others.
+
+        Only an open, recorded conflict between exactly these two facts is
+        acted on, and only while the kept fact is itself still present;
+        everything else is returned as `skipped`.
+        """
         marked_resolved = 0
         dropped = []
         skipped = []
 
-        for drop_id in drop_ids:
-            # Only an open, recorded conflict between exactly these two facts
-            # may be resolved; otherwise any fact could switch off any other.
-            cursor.execute("""
-                SELECT 1 FROM fact_conflicts
-                WHERE resolved = 0
-                AND (
-                    (fact_a = ? AND fact_b = ?)
-                    OR (fact_a = ? AND fact_b = ?)
+        with self._write_transaction() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT 1 FROM facts WHERE id = ? AND id IN ({_ACTIVE_FACT_IDS})",
+                (keep_id, self._now())
+            )
+            keep_active = cursor.fetchone() is not None
+
+            for drop_id in drop_ids:
+                cursor.execute("""
+                    SELECT 1 FROM fact_conflicts
+                    WHERE resolved = 0
+                    AND (
+                        (fact_a = ? AND fact_b = ?)
+                        OR (fact_a = ? AND fact_b = ?)
+                    )
+                """, (keep_id, drop_id, drop_id, keep_id))
+                reason = None
+                if cursor.fetchone() is None:
+                    reason = "no_open_conflict"
+                elif not keep_active:
+                    # An expired or replaced fact cannot win a conflict: that
+                    # would retire the live fact and leave nothing in its place.
+                    reason = "keep_not_active"
+                if reason:
+                    skipped.append(drop_id)
+                    self._audit(
+                        "conflict_resolve_rejected",
+                        fact_id=keep_id,
+                        accepted=False,
+                        reason=reason,
+                        metadata={"keep_id": keep_id, "drop_id": drop_id},
+                        conn=conn,
+                    )
+                    continue
+                cursor.execute(
+                    "UPDATE facts SET superseded_by = ? WHERE id = ?",
+                    (keep_id, drop_id)
                 )
-            """, (keep_id, drop_id, drop_id, keep_id))
-            if cursor.fetchone() is None:
-                skipped.append(drop_id)
+                dropped.append(drop_id)
+                drop_exists = cursor.rowcount > 0
+                cursor.execute("""
+                    UPDATE fact_conflicts
+                    SET resolved = 1
+                    WHERE resolved = 0
+                    AND (
+                        (fact_a = ? AND fact_b = ?)
+                        OR (fact_a = ? AND fact_b = ?)
+                    )
+                """, (keep_id, drop_id, drop_id, keep_id))
+                marked_resolved += cursor.rowcount
                 self._audit(
-                    "conflict_resolve_rejected",
+                    "conflict_resolved",
                     fact_id=keep_id,
-                    accepted=False,
-                    reason="no_open_conflict",
-                    metadata={"keep_id": keep_id, "drop_id": drop_id},
+                    metadata={
+                        "keep_id": keep_id,
+                        "drop_id": drop_id,
+                        "drop_exists": drop_exists,
+                    },
                     conn=conn,
                 )
-                continue
-            cursor.execute(
-                "UPDATE facts SET superseded_by = ? WHERE id = ?",
-                (keep_id, drop_id)
-            )
-            dropped.append(drop_id)
-            drop_exists = cursor.rowcount > 0
-            cursor.execute("""
-                UPDATE fact_conflicts
-                SET resolved = 1
-                WHERE resolved = 0
-                AND (
-                    (fact_a = ? AND fact_b = ?)
-                    OR (fact_a = ? AND fact_b = ?)
-                )
-            """, (keep_id, drop_id, drop_id, keep_id))
-            marked_resolved += cursor.rowcount
-            self._audit(
-                "conflict_resolved",
-                fact_id=keep_id,
-                metadata={
-                    "keep_id": keep_id,
-                    "drop_id": drop_id,
-                    "drop_exists": drop_exists,
-                },
-                conn=conn,
-            )
-
-        conn.commit()
-        if should_close:
-            conn.close()
 
         return {
             "kept": keep_id,
@@ -1651,66 +1739,59 @@ class AgentMemory:
         The representative is the fact from the most trusted source;
         confidence only breaks ties within the same source, so a lower-trust
         fact cannot displace a user-sourced one by declaring high confidence.
+        The representative keeps its own confidence: shared tags say the
+        facts are about the same subject, not that they agree.
+
+        Reading the groups and retiring their members happen under one write
+        lock, so a fact confirmed in between is not retired on a stale read.
         """
-        facts = self.list_facts(limit=100000)
-        groups: Dict[tuple, List[Fact]] = {}
-        for fact in facts:
-            key = (fact.authority_class, tuple(sorted(fact.tags)))
-            groups.setdefault(key, []).append(fact)
+        transaction = nullcontext() if dry_run else self._write_transaction()
+        with transaction as conn:
+            facts = self.list_facts(limit=100000)
+            groups: Dict[tuple, List[Fact]] = {}
+            for fact in facts:
+                key = (fact.authority_class, tuple(sorted(fact.tags)))
+                groups.setdefault(key, []).append(fact)
 
-        candidate_groups = [
-            (key, group) for key, group in sorted(groups.items())
-            if len(group) >= 2 and key[1]
-        ]
-        report = {
-            "dry_run": dry_run,
-            "groups_examined": len(candidate_groups),
-            "facts_consolidated": 0,
-            "facts_superseded": 0,
-            "groups": [],
-        }
-
-        for key, group in candidate_groups:
-            authority_class, tags = key
-            ordered = sorted(
-                group,
-                key=lambda fact: (
-                    _SOURCE_TRUST_RANK.get(fact.source, -1),
-                    fact.confidence, fact.created_at, fact.id,
-                ),
-                reverse=True,
-            )
-            representative = ordered[0]
-            old_ids = [fact.id for fact in ordered]
-            # Only equally or more trusted facts add confidence. Same tags mean
-            # same subject, not agreement: lower-trust facts in the group may
-            # contradict the representative and must not strengthen it.
-            representative_rank = _SOURCE_TRUST_RANK.get(representative.source, -1)
-            supporting = sum(
-                1 for fact in ordered[1:]
-                if _SOURCE_TRUST_RANK.get(fact.source, -1) >= representative_rank
-            )
-            consolidated_confidence = min(
-                1.0,
-                representative.confidence + 0.05 * supporting
-            )
-            group_report = {
-                "authority_class": authority_class,
-                "tags": list(tags),
-                "representative_id": representative.id,
-                "old_ids": old_ids,
-                "new_id": representative.id if not dry_run else None,
-                "confidence": consolidated_confidence,
-                "superseded": len(group) - 1,
+            candidate_groups = [
+                (key, group) for key, group in sorted(groups.items())
+                if len(group) >= 2 and key[1]
+            ]
+            report = {
+                "dry_run": dry_run,
+                "groups_examined": len(candidate_groups),
+                "facts_consolidated": 0,
+                "facts_superseded": 0,
+                "groups": [],
             }
 
-            if not dry_run:
-                conn, should_close = self._connect()
-                cursor = conn.cursor()
-                try:
+            for key, group in candidate_groups:
+                authority_class, tags = key
+                ordered = sorted(
+                    group,
+                    key=lambda fact: (
+                        _SOURCE_TRUST_RANK.get(fact.source, -1),
+                        fact.confidence, fact.created_at, fact.id,
+                    ),
+                    reverse=True,
+                )
+                representative = ordered[0]
+                old_ids = [fact.id for fact in ordered]
+                group_report = {
+                    "authority_class": authority_class,
+                    "tags": list(tags),
+                    "representative_id": representative.id,
+                    "old_ids": old_ids,
+                    "new_id": representative.id if not dry_run else None,
+                    "confidence": representative.confidence,
+                    "superseded": len(group) - 1,
+                }
+
+                if not dry_run:
+                    cursor = conn.cursor()
                     cursor.execute(
-                        "UPDATE facts SET confidence = ?, tags = ? WHERE id = ?",
-                        (consolidated_confidence, json.dumps(list(tags)), representative.id)
+                        "UPDATE facts SET tags = ? WHERE id = ?",
+                        (json.dumps(list(tags)), representative.id)
                     )
                     for old_id in old_ids:
                         if old_id == representative.id:
@@ -1730,23 +1811,13 @@ class AgentMemory:
                             },
                             conn=conn,
                         )
-                    conn.commit()
-                finally:
-                    if should_close:
-                        conn.close()
 
-            report["facts_consolidated"] += 1
-            report["facts_superseded"] += len(group) - 1
-            report["groups"].append(group_report)
+                report["facts_consolidated"] += 1
+                report["facts_superseded"] += len(group) - 1
+                report["groups"].append(group_report)
 
-        if not dry_run:
-            conn, should_close = self._connect()
-            try:
+            if not dry_run:
                 self._reconcile_conflicts(conn)
-                conn.commit()
-            finally:
-                if should_close:
-                    conn.close()
 
         return report
 
@@ -1754,83 +1825,82 @@ class AgentMemory:
         """Replaces a fact with new content.
 
         Unless the caller names them, the replacement inherits the old fact's
-        source and confidence: rewording a fact must not make it look more
-        trusted than what it replaces.
+        lane, source and confidence: rewording a fact must not make it look
+        more trusted than what it replaces. The check and the replacement run
+        under one write lock, so the old fact cannot be confirmed by another
+        writer between the two.
         """
-        conn, should_close = self._connect()
-        try:
+        with self._write_transaction() as conn:
             row = conn.execute(
                 "SELECT source, confidence, authority_class FROM facts "
                 "WHERE id = ?",
                 (old_fact_id,)
             ).fetchone()
-        finally:
-            if should_close:
-                conn.close()
-        if row:
-            old_source, old_confidence, old_lane = row
-            source = kwargs.setdefault("source", old_source)
-            kwargs.setdefault("confidence", old_confidence)
-            lane = kwargs.setdefault("authority_class", old_lane)
-            # A replacement may not take a fact out of its lane or put a less
-            # trusted source in its place; otherwise a low-trust write could
-            # switch off an identity or authorization fact.
-            reason = None
-            if lane != old_lane:
-                reason = "supersede_lane_change"
-            elif (_SOURCE_TRUST_RANK.get(source, -1)
-                  < _SOURCE_TRUST_RANK.get(old_source, -1)):
-                reason = "supersede_source_downgrade"
-            if reason:
-                self._audit(
-                    "policy_reject",
-                    fact_id=old_fact_id,
-                    content=new_content,
-                    authority_class=lane,
-                    source=source,
-                    accepted=False,
-                    reason=reason,
-                )
+            if row:
+                old_source, old_confidence, old_lane = row
+                source = kwargs.setdefault("source", old_source)
+                kwargs.setdefault("confidence", old_confidence)
+                lane = kwargs.setdefault("authority_class", old_lane)
+                # A replacement may not take a fact out of its lane or put a
+                # less trusted source in its place; otherwise a low-trust
+                # write could switch off an identity or authorization fact.
+                reason = None
+                if lane != old_lane:
+                    reason = "supersede_lane_change"
+                elif (_SOURCE_TRUST_RANK.get(source, -1)
+                      < _SOURCE_TRUST_RANK.get(old_source, -1)):
+                    reason = "supersede_source_downgrade"
+                if reason:
+                    self._audit(
+                        "policy_reject",
+                        fact_id=old_fact_id,
+                        content=new_content,
+                        authority_class=lane,
+                        source=source,
+                        accepted=False,
+                        reason=reason,
+                        conn=conn,
+                    )
+                    return None
+
+            new_id = self.remember(new_content, **kwargs)
+            if not new_id:
                 return None
+            if new_id == old_fact_id:
+                # Same lane and same text: nothing to replace. Marking it
+                # would make the fact supersede itself and disappear.
+                return new_id
 
-        new_id = self.remember(new_content, **kwargs)
-        if not new_id:
-            return None
-
-        conn, should_close = self._connect()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE facts SET superseded_by = ? WHERE id = ?",
-            (new_id, old_fact_id)
-        )
-        old_exists = cursor.rowcount > 0
-        self._audit(
-            "supersede",
-            fact_id=new_id,
-            metadata={
-                "old_id": old_fact_id,
-                "new_id": new_id,
-                "old_exists": old_exists,
-            },
-            conn=conn,
-        )
-        if not old_exists:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE facts SET superseded_by = ? WHERE id = ?",
+                (new_id, old_fact_id)
+            )
+            old_exists = cursor.rowcount > 0
             self._audit(
-                "supersede_target_not_found",
-                fact_id=old_fact_id,
+                "supersede",
+                fact_id=new_id,
                 metadata={
                     "old_id": old_fact_id,
                     "new_id": new_id,
-                    "reason": "old_fact_id did not match any active fact; "
-                              "new fact was stored but old fact was not marked superseded",
+                    "old_exists": old_exists,
                 },
                 conn=conn,
             )
-        self._reconcile_conflicts(conn)
-        conn.commit()
-        if should_close:
-            conn.close()
-        return new_id
+            if not old_exists:
+                self._audit(
+                    "supersede_target_not_found",
+                    fact_id=old_fact_id,
+                    metadata={
+                        "old_id": old_fact_id,
+                        "new_id": new_id,
+                        "reason": "old_fact_id did not match any active fact; "
+                                  "new fact was stored but old fact was not marked superseded",
+                    },
+                    conn=conn,
+                )
+            self._reconcile_conflicts(conn)
+            return new_id
 
     def forget(self, fact_id: str):
         conn, should_close = self._connect()
@@ -2438,7 +2508,12 @@ class AgentMemory:
         cursor.execute("SELECT COUNT(*) FROM entity_relations")
         relations = cursor.fetchone()[0]
 
-        cursor.execute("SELECT COUNT(*) FROM fact_conflicts WHERE resolved = 0")
+        cursor.execute(
+            f"SELECT COUNT(*) FROM fact_conflicts WHERE resolved = 0 "
+            f"AND fact_a IN ({_ACTIVE_FACT_IDS}) "
+            f"AND fact_b IN ({_ACTIVE_FACT_IDS})",
+            (self._now(), self._now())
+        )
         open_conflicts = cursor.fetchone()[0]
 
         cursor.execute(

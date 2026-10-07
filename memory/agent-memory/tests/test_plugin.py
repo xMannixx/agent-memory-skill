@@ -304,6 +304,27 @@ def test_plugin_emits_exactly_one_line_per_entry(mem, separator):
     assert lines.count("## Identity (permanent)") == 1
 
 
+def test_plugin_labels_an_expired_fact_revived_by_external_text(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    class Clock(AgentMemory):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        def _utc_now(self):
+            return Clock.now
+
+    mem = Clock(db_path=str(tmp_path / "revive.db"))
+    mem.remember("Deploy target is old-prod", authority_class="evidence",
+                 source="observation", confidence=1.0)
+    Clock.now += timedelta(days=61)
+    mem.remember("Deploy target is old-prod", authority_class="evidence",
+                 source="external", confidence=0.5)
+
+    context = build_memory_context(mem, is_first_turn=True)
+
+    assert "- [external] Deploy target is old-prod" in context
+
+
 def test_plugin_returns_none_after_first_turn_without_query(mem):
     mem.remember(
         "Perry is the operator",
