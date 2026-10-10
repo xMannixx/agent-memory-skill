@@ -5,11 +5,10 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).parents[3]
-MEMORY_SRC = ROOT / "memory" / "agent-memory" / "src"
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-if str(MEMORY_SRC) not in sys.path:
+# Path bootstrap (src/ and the `plugin` package, repo + installed layout) is
+# done once in conftest.py, which pytest imports before this module.
+MEMORY_SRC = Path(__file__).resolve().parent.parent / "src"
+if MEMORY_SRC.is_dir() and str(MEMORY_SRC) not in sys.path:
     sys.path.insert(0, str(MEMORY_SRC))
 
 from memory import AgentMemory
