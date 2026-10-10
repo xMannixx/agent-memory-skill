@@ -2,6 +2,7 @@
 """CLI wrapper for AgentMemory — Hermes Edition."""
 
 import sys
+import os
 import json
 import argparse
 from datetime import datetime, timezone
@@ -547,8 +548,20 @@ def main():
             if _doctor_should_close:
                 _doctor_conn.close()
 
-        plugin_path = Path(__file__).parents[3] / "plugin" / "__init__.py"
-        plugin_status = "present" if plugin_path.exists() else "missing"
+        # The repo checkout keeps the plugin at <repo>/plugin; the installed
+        # copy lives under $HERMES_HOME/plugins/agent-memory-plugin. Report the
+        # first candidate that exists, otherwise the installed location.
+        _plugin_candidates = (
+            Path(__file__).resolve().parents[3] / "plugin" / "__init__.py",
+            Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes"))
+            / "plugins"
+            / "agent-memory-plugin"
+            / "__init__.py",
+        )
+        plugin_path = next(
+            (p for p in _plugin_candidates if p.is_file()), _plugin_candidates[-1]
+        )
+        plugin_status = "present" if plugin_path.is_file() else "missing"
         emit(f"Plugin file:      {plugin_path} ({plugin_status})")
 
     elif args.command == "propose-rule":
